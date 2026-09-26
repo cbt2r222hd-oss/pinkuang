@@ -165,7 +165,8 @@ test('final market check uses only routing, fee, exact order and execution reads
     gasLimit: 200000n, gasPrice: 1000000000n, gasCost: 200000000000000n,
     total: 200000000000202n, data: marketAbi.encodeFunctionData('fill', [1n, 2n]),
   };
-  let routed = market, fee = 100n, price = 101n, expires = 2n ** 63n, simulated = true;
+  let routed = market, fee = 100n, price = 101n, expires = 2n ** 63n;
+  let remaining = 17n, active = true, simulated = true;
   const calls: string[] = [];
   const provider = {
     getNetwork: async () => ({ chainId: 56n }),
@@ -175,7 +176,7 @@ test('final market check uses only routing, fee, exact order and execution reads
       calls.push(data.slice(0, 10));
       if (to.toLowerCase() === factory.toLowerCase()) return factoryAbi.encodeFunctionResult('shareMarket', [routed]);
       if (data.startsWith(marketAbi.getFunction('feeBps')!.selector)) return marketAbi.encodeFunctionResult('feeBps', [fee]);
-      if (data.startsWith(marketAbi.getFunction('orders')!.selector)) return marketAbi.encodeFunctionResult('orders', [[seller, pool, 17n, price, true]]);
+      if (data.startsWith(marketAbi.getFunction('orders')!.selector)) return marketAbi.encodeFunctionResult('orders', [[seller, pool, remaining, price, active]]);
       if (data.startsWith(marketAbi.getFunction('orderExpiresAt')!.selector)) return marketAbi.encodeFunctionResult('orderExpiresAt', [expires]);
       assert.equal(to.toLowerCase(), market.toLowerCase());
       assert.equal(data, quote.data); assert.equal(value, quote.gross);
@@ -194,7 +195,11 @@ test('final market check uses only routing, fee, exact order and execution reads
   await assert.rejects(verifyMarketQuoteForSend(provider, quote), /价格或可购买份额已变化/);
   price = 101n; expires = 1n;
   await assert.rejects(verifyMarketQuoteForSend(provider, quote), /价格或可购买份额已变化/);
-  expires = 2n ** 63n; simulated = false;
+  expires = 2n ** 63n; remaining = 1n;
+  await assert.rejects(verifyMarketQuoteForSend(provider, quote), /价格或可购买份额已变化/);
+  remaining = 0n; active = false;
+  await assert.rejects(verifyMarketQuoteForSend(provider, quote), /价格或可购买份额已变化/);
+  remaining = 17n; active = true; simulated = false;
   await assert.rejects(verifyMarketQuoteForSend(provider, quote), /execution reverted/);
 });
 
@@ -259,22 +264,24 @@ test('fast market send still stops before wallet submission when the server inte
   assert.equal(sent.gas, '0x186a0');
 });
 
-test('cross-tab lock rejects concurrent market submission and releases after the first request', async () => {
-  let locked = false, requests = 0, actions = 0;
+test('cross-tab lock serializes one wallet but allows another wallet to proceed', async () => {
+  const locked = new Set<string>(); let requests = 0, actions = 0;
   const locks = { request: async (name: string, options: { ifAvailable: boolean }, callback: (lock: { name: string } | null) => Promise<unknown>) => {
-    assert.equal(name, 'pinkuang-market-chain56'); assert.equal(options.ifAvailable, true); requests += 1;
-    if (locked) return callback(null);
-    locked = true;
-    try { return await callback({ name }); } finally { locked = false; }
+    assert(name === `pinkuang-market-chain56-${buyer.toLowerCase()}` || name === `pinkuang-market-chain56-${seller.toLowerCase()}`);
+    assert.equal(options.ifAvailable, true); requests += 1;
+    if (locked.has(name)) return callback(null);
+    locked.add(name);
+    try { return await callback({ name }); } finally { locked.delete(name); }
   } } as unknown as Pick<LockManager, 'request'>;
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const first = withMarketTransactionLock(async () => { actions += 1; await held; return 'confirmed request'; }, locks);
-  await assert.rejects(withMarketTransactionLock(async () => { actions += 1; }, locks), /另一个页面/);
+  const first = withMarketTransactionLock(buyer, async () => { actions += 1; await held; return 'confirmed request'; }, locks);
+  await assert.rejects(withMarketTransactionLock(buyer, async () => { actions += 1; }, locks), /另一个页面/);
   assert.equal(actions, 1, 'competing tab must not simulate, change the journal, or request a signature');
+  assert.equal(await withMarketTransactionLock(seller, async () => { actions += 1; return 'other wallet'; }, locks), 'other wallet');
   release(); assert.equal(await first, 'confirmed request');
-  assert.equal(await withMarketTransactionLock(async () => 'subsequent explicit request', locks), 'subsequent explicit request');
-  assert.equal(requests, 3);
+  assert.equal(await withMarketTransactionLock(buyer, async () => 'subsequent explicit request', locks), 'subsequent explicit request');
+  assert.equal(requests, 4);
 });
 
 test('a persisted unknown intent blocks a subsequent tab before any wallet request or journal overwrite', async () => {
@@ -283,7 +290,7 @@ test('a persisted unknown intent blocks a subsequent tab before any wallet reque
   let requests = 0, writes = 0;
   const wallet: WalletProvider = { request: async () => { requests += 1; throw new Error('Unexpected wallet request.'); } };
   const storage = { getItem: async () => JSON.stringify(pending), setItem: async () => { writes += 1; }, removeItem: async () => { writes += 1; } };
-  await assert.rejects(sendMarketAction(wallet, {} as MarketQuote, storage, () => { writes += 1; }), /待确认/);
+  await assert.rejects(sendMarketAction(wallet, { account: buyer } as MarketQuote, storage, () => { writes += 1; }), /待确认/);
   assert.equal(requests, 0); assert.equal(writes, 0);
 });
 
@@ -292,7 +299,7 @@ test('unavailable server journal blocks a market send before any wallet request'
   const wallet: WalletProvider = { request: async () => { requests += 1; throw new Error('Unexpected wallet request.'); } };
   const storage = { getItem: async () => { throw new Error('Server unavailable.'); },
     setItem: async () => { throw new Error('Must not write.'); }, removeItem: async () => { throw new Error('Must not delete.'); } };
-  await assert.rejects(sendMarketAction(wallet, {} as MarketQuote, storage, () => {}), /Server unavailable/);
+  await assert.rejects(sendMarketAction(wallet, { account: buyer } as MarketQuote, storage, () => {}), /Server unavailable/);
   assert.equal(requests, 0);
 });
 

@@ -10,7 +10,7 @@ import { createChainIndexServer } from './api.mjs';
 import { startChainIndex } from './server.mjs';
 
 const addr = n => getAddress(`0x${n.toString(16).padStart(40, '0')}`).toLowerCase();
-const factory = addr(1), market = addr(2), pool = addr(3), collection = addr(4), alice = addr(5), bob = addr(6);
+const factory = addr(1), market = addr(2), pool = addr(3), collection = addr(4), alice = addr(5), bob = addr(6), carol = addr(7);
 const hex = n => `0x${n.toString(16).padStart(64, '0')}`;
 const binding = new Interface(['function shareMarket() view returns(address)', 'function isPool(address) view returns(bool)',
   'function factory() view returns(address)', 'function poolCount() view returns(uint256)', 'function nextOrderId() view returns(uint256)']);
@@ -148,6 +148,42 @@ test('one wallet subscribes 20+80 then another buys 40+60 without duplicate posi
     assert.equal(index.orders({ active: true }).items.length, 0);
     assert.equal(index.orders({ active: false }).items[0].remaining, '0');
     assert.equal(index.stats().shareMarketFilledGrossWei, '1000');
+  } finally { index.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('competing final-share fills index only the winner and replace it after a reorg', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pinkuang-chain-index-race-'));
+  const chain = new MockChain();
+  chain.event('factory', 'PoolCreated', [pool, collection, 16210n, 1100n, 1000n, alice], 1);
+  chain.event('pool', 'Deposited', [alice, 1, 11n, 11n], 2);
+  chain.event('pool', 'Transfer', [ZeroAddress, alice, 1n], 2);
+  chain.event('pool', 'Purchased', [10n, 0, 123n], 3);
+  chain.event('market', 'OrderListed', [1n, alice, pool, 1n, 10n], 4);
+  chain.event('market', 'OrderExpirySet', [1n, 1_800_000_000], 4);
+  chain.event('market', 'OrderFilled', [1n, bob, 1n, 10n, 0n], 5);
+  chain.event('pool', 'Transfer', [alice, bob, 1n], 5);
+  chain.events.reverse(); // An RPC may return the different contract log pages in arbitrary order.
+  const index = new ChainIndex(chain, { dbPath: join(directory, 'index.sqlite'), factory, market,
+    startBlock: 1, confirmations: 2 });
+  try {
+    await index.sync();
+    assert.equal(index.orders({ active: false }).items[0].remaining, '0');
+    assert.deepEqual(index.accountPools(bob).items, [pool]);
+    assert.deepEqual(index.accountPools(carol).items, []);
+    assert.equal(index.activity({ pool }).items.filter(row => row.event === 'OrderFilled').length, 1);
+    assert.equal(index.stats().shareMarketFilledGrossWei, '10');
+
+    chain.reorg();
+    chain.event('market', 'OrderFilled', [1n, carol, 1n, 10n, 0n], 5);
+    chain.event('pool', 'Transfer', [alice, carol, 1n], 5);
+    await index.sync();
+    assert.equal(index.orders({ active: false }).items[0].remaining, '0');
+    assert.deepEqual(index.accountPools(bob).items, []);
+    assert.deepEqual(index.accountPools(carol).items, [pool]);
+    assert.equal(index.activity({ account: bob }).items.length, 0);
+    assert.equal(index.activity({ pool }).items.filter(row => row.event === 'OrderFilled').length, 1);
+    assert.equal(index.stats().everParticipantAddressCount, '2');
+    assert.equal(index.stats().shareMarketFilledGrossWei, '10');
   } finally { index.close(); await rm(directory, { recursive: true, force: true }); }
 });
 

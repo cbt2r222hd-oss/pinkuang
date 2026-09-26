@@ -328,10 +328,10 @@ export async function migrateLegacyMarketPending(
   return current;
 }
 
-/** All journal checks, simulations and the signature request run inside one cross-tab lock. */
-export async function withMarketTransactionLock<T>(action: () => Promise<T>, locks: Pick<LockManager, 'request'> | undefined = typeof navigator !== 'undefined' ? navigator.locks : undefined): Promise<T> {
+/** One wallet's journal, simulation and signature are serialized across tabs. Other wallets have separate nonces. */
+export async function withMarketTransactionLock<T>(account: string, action: () => Promise<T>, locks: Pick<LockManager, 'request'> | undefined = typeof navigator !== 'undefined' ? navigator.locks : undefined): Promise<T> {
   if (locks) {
-    return locks.request('pinkuang-market-chain56', { ifAvailable: true, mode: 'exclusive' }, async lock => {
+    return locks.request(`pinkuang-market-chain56-${address(account).toLowerCase()}`, { ifAvailable: true, mode: 'exclusive' }, async lock => {
       if (!lock) throw new Error('另一个页面正在提交市场交易，请等该页面完成并核对回执。');
       return action();
     });
@@ -341,7 +341,7 @@ export async function withMarketTransactionLock<T>(action: () => Promise<T>, loc
 }
 
 export async function sendMarketAction(wallet: WalletProvider, quote: MarketQuote, storage: MarketJournalStorage, onPending: (pending: PendingMarketTransaction | null) => void): Promise<PendingMarketTransaction> {
-  return withMarketTransactionLock(() => sendMarketActionLocked(wallet, quote, storage, onPending));
+  return withMarketTransactionLock(quote.account, () => sendMarketActionLocked(wallet, quote, storage, onPending));
 }
 
 /** Preserve the broadcast hash in memory before the server update can fail. */
@@ -455,7 +455,7 @@ export async function recoverMarketReceipt(provider: Provider, pending: PendingM
 
 /** Re-read and update the journal under the same lock as sending; stale tabs cannot erase a newer intent. */
 export async function reconcileMarketPending(provider: Provider, pending: PendingMarketTransaction, storage: MarketJournalStorage, hash?: string): Promise<MarketRecovery> {
-  return withMarketTransactionLock(async () => {
+  return withMarketTransactionLock(pending.account, async () => {
     const current = await loadMarketPending(storage);
     if (!current || !sameMarketIntent(current, pending)) {
       throw new Error('待确认记录已被其他页面更新，请刷新页面后再核对。');

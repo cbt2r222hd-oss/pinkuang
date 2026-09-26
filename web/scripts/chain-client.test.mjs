@@ -138,6 +138,24 @@ test('one wallet can subscribe in separate transactions until the pool reaches 1
   assert.equal(abi.PoolVault.parseTransaction(personalPoolAction(sole, pool, account, 'deposit', 100n)).args[0], 100n);
 });
 
+test('two wallets may see the same last share; only a fresh post-fill snapshot rejects another subscription', async () => {
+  const other = addr(6);
+  const nearlyFull = rawRow({ totalSupply: 99n, totalRaised: 10890n, memberCount: 2n });
+  const [first, second] = await Promise.all([
+    readPoolSnapshot(provider({ rows: [nearlyFull] }), { factory, account }),
+    readPoolSnapshot(provider({ rows: [nearlyFull] }), { factory, account: other }),
+  ]);
+  assert.equal(BigInt(personalPoolAction(first, pool, account, 'deposit', 1n).value), 110n);
+  assert.equal(BigInt(personalPoolAction(second, pool, other, 'deposit', 1n).value), 110n);
+  assert.throws(() => personalPoolAction(first, pool, other, 'deposit', 1n), /another wallet/);
+
+  const refreshed = await readPoolSnapshot(provider({ rows: [rawRow({ totalSupply: 100n,
+    totalRaised: 11000n, state: 1n })] }), { factory, account: other });
+  assert.throws(() => personalPoolAction(refreshed, pool, other, 'deposit', 1n), /not open/);
+  // The earlier unsigned transaction remains stale; callers must re-read and simulate before signing.
+  assert.equal(abi.PoolVault.parseTransaction(personalPoolAction(second, pool, other, 'deposit', 1n)).args[0], 1n);
+});
+
 test('harvest and self claim stay separate, including former holders; no claimFor/router', () => {
   const snapshot = localSnapshot(rawRow({ state: 4n, claimableBEM: 33n }));
   const queue = personalClaimQueue(snapshot, account);

@@ -189,6 +189,31 @@ test('market intent cannot be overwritten or cleared without a finalized same-no
   } finally { await f.close(); }
 });
 
+test('two wallets racing one order keep independent market intents, nonces and revisions', async () => {
+  const f = await fixture();
+  try {
+    const a = await f.login(wallet), b = await f.login(other);
+    const fill = owner => ({ ...intent(owner), action: { kind: 'fill', orderId: '1', amount: '1', expectedPrice: '0' } });
+    const first = fill(account), second = fill(other.address.toLowerCase());
+    const [savedA, savedB] = await Promise.all([
+      f.request('/api/journal/market', 'PUT', { record: first, expectedRevision: 0 }, a.cookie),
+      f.request('/api/journal/market', 'PUT', { record: second, expectedRevision: 0 }, b.cookie),
+    ]);
+    assert.equal(savedA.status, 200); assert.equal(savedB.status, 200);
+    assert.equal(savedA.body.revision, 1); assert.equal(savedB.body.revision, 1);
+    assert.equal((await f.request('/api/journal/market', 'GET', undefined, a.cookie)).body.record.account, account);
+    assert.equal((await f.request('/api/journal/market', 'GET', undefined, b.cookie)).body.record.account, other.address.toLowerCase());
+    assert.equal((await f.request('/api/journal/market', 'GET', undefined, b.cookie, origin,
+      { 'X-Pinkuang-Account': account })).status, 409);
+    assert.equal((await f.request('/api/journal/market', 'PUT', { record: { ...first, nonce: 8 },
+      expectedRevision: 1 }, a.cookie)).status, 409);
+    assert.equal((await f.request('/api/journal/market', 'PUT', { record: { ...second, hash: hex(88) },
+      expectedRevision: 1 }, b.cookie)).body.revision, 2);
+    assert.equal((await f.request('/api/journal/market', 'GET', undefined, a.cookie)).body.revision, 1);
+    assert.equal((await f.request('/api/journal/market', 'GET', undefined, b.cookie)).body.revision, 2);
+  } finally { await f.close(); }
+});
+
 test('market recovery remains pending on unavailable RPC and the production HTTP mount reaches the journal', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pinkuang-journal-mount-'));
   const service = createJournalService({ dbPath: join(directory, 'private', 'journal.sqlite'), origin });

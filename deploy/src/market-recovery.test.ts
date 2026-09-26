@@ -43,7 +43,7 @@ test('one receipt and two confirmations without finalized both keep the UI journ
     assert.equal(result.receipt?.status, 1); assert.equal(result.resolution, null);
     assert(await loadMarketPending(storage), 'the same helper used by MarketPage must retain pending intent');
     let walletCalls = 0;
-    await assert.rejects(sendMarketAction({ request: async () => { walletCalls++; throw new Error('must not send'); } }, {} as MarketQuote, storage, () => {}), /待确认/);
+    await assert.rejects(sendMarketAction({ request: async () => { walletCalls++; throw new Error('must not send'); } }, { account } as MarketQuote, storage, () => {}), /待确认/);
     assert.equal(walletCalls, 0);
   }
 });
