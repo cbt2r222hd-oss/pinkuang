@@ -42,17 +42,19 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 | `BEMINE_READ_RPC_URL` | `https://bsc-dataseed.bnbchain.org`；未设时沿用 `DEPLOYMENT_JOURNAL_RPC_URL` |
 | `BEMINE_INDEX_URL` | `http://127.0.0.1:4180` |
 | `CHAIN_INDEX_RPC_URL` | `https://bsc-dataseed.bnbchain.org`；读取主网区块、合约代码与状态 |
-| `CHAIN_INDEX_LOGS_RPC_URL` | `https://public.1rpc.io/bnb`；单独提供历史 `eth_getLogs` |
-| `CHAIN_INDEX_SCAN_RANGE` | `50`；限制每个日志查询批次的区块跨度，匹配本次 1RPC 实测限制 |
+| `CHAIN_INDEX_LOGS_RPC_URL` | `https://rpc-bnb.blockmachine.io`；单独提供历史 `eth_getLogs` |
+| `CHAIN_INDEX_SCAN_RANGE` | `500`；限制日志查询批次的区块跨度，匹配本次 Blockmachine 实测及索引器单轮 500 块上限 |
 | `CHAIN_INDEX_DB` | 独立持久索引数据库 |
 | `CHAIN_INDEX_FACTORY` / `CHAIN_INDEX_MARKET` | 上述 Factory / ShareMarket |
 | `CHAIN_INDEX_START_BLOCK` | `124286242` |
 | `CHAIN_INDEX_CONFIRMATIONS` | `12` |
 | `CHAIN_INDEX_HOST` / `CHAIN_INDEX_PORT` | `127.0.0.1` / `4180` |
 
-本次索引器使用**双 RPC**：官方节点读取区块、代码和合约状态，1RPC 仅处理事件日志查询；每轮同步直接核对两个节点的 `eth_chainId=56`。官方节点不能据此当作历史日志服务使用。虽然代码允许省略 `CHAIN_INDEX_LOGS_RPC_URL` 并与主 RPC 共用地址，本次部署必须显式填写上述日志节点。
+本次索引器使用**双 RPC**：官方节点读取区块、代码和合约状态，Blockmachine 仅处理事件日志查询；每轮同步直接核对两个节点的 `eth_chainId=56`。官方节点不能据此当作历史日志服务使用。虽然代码允许省略 `CHAIN_INDEX_LOGS_RPC_URL` 并与主 RPC 共用地址，本次部署必须显式填写上述日志节点。
 
-日志节点已根据实际部署高度重新选择。BlockReq 本次探测只支持最近 8192 个区块，部署块 `124286242` 现已超出它的窗口，因此不能作为本项目的历史回填日志源。1RPC 本次可读取该历史部署块，但单次日志查询最多跨 50 个区块；生产使用 `CHAIN_INDEX_SCAN_RANGE=50`，不能沿用较大的扫描跨度。
+日志节点已根据实际部署高度重新选择。BNB Chain 官方文档所列的 Blockmachine 节点，本次服务器实测可按实际嵌套 topics 条件查询 500 个历史区块，耗时 0.542 秒；初始化块的三条事件及交易身份与既有部署证据匹配。生产已采用 `https://rpc-bnb.blockmachine.io` 和 `CHAIN_INDEX_SCAN_RANGE=500`，与索引器既有的单轮 500 块上限一致，以减少日志请求次数；500 块配置回归测试通过。这些有限探测不代表服务商公布的全局上限或长期可用性保证。
+
+其他已探测节点的限制保留为排查记录：BlockReq 本次只支持最近 8192 个区块，部署块 `124286242` 已超出该窗口；1RPC 本次能读取该历史部署块，但日志查询跨度限制为 50 个区块。二者不作为本次生产日志配置。
 
 日志服务是否适用，须从实际部署块开始验收历史查询、事件身份、区块跨度限制及追平结果；只通过 `eth_chainId`、最新块或最近区块查询不够。节点的历史窗口与限额可能变化，换源时重新验收。读取受限应保留失败状态，不得把缺失历史视为合法空日志或把起始块改到较新位置绕过回填。
 
@@ -82,7 +84,7 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 |---|---|---|
 | Linux 后台基线回归 | 81/81（双 RPC 新增专项前） | 包含日志恢复、并发许可、可信图、代理及索引基础用例 |
 | 索引与启动服务专项复跑 | 16/16（原索引 10 + 双 RPC/退避/关闭 6） | 本机 mock RPC 验证分流、错误链、429、超时及幂等关闭；不与基线重叠累计 |
-| 前端脚本回归 | 108/108 | 当前前端读取、构造调用、交互状态与保护逻辑 |
+| Linux 完整 web 回归 | 121/121（前端脚本 109 + 旧 live API 12） | 隔离 Linux、mock RPC 与临时数据库；涵盖当前前端与旧 API 回归 |
 | 本机 Anvil 资金回路 | 2/2 | 实际本机 EVM 执行：未满额撤回提现、募集超时退款提现 |
 | 主网只读图检查 | 通过，区块 `124292027` | 本次既有地址、代码、实现关系与运营绑定 |
 
@@ -96,7 +98,7 @@ node --test $(find server -name '*.test.mjs' ! -name artifact-digest.test.mjs -p
 node --test server/chain-index/indexer.test.mjs server/chain-index/server.test.mjs
 node --test server/artifact-digest.test.mjs
 cd ../web
-node --test scripts/*.test.mjs
+node --test scripts/*.test.mjs server/live-api.test.mjs
 node scripts/sync-contracts.mjs --check
 NEXT_PUBLIC_BASE_PATH=/bemine pnpm exec next build
 ```
@@ -111,7 +113,7 @@ NEXT_PUBLIC_BASE_PATH=/bemine pnpm exec next build
 
 脚本顶部为本机绝对路径，迁移机器须先修改源码、依赖与输出路径。它只启动 `127.0.0.1` 的临时 Anvil，使用解锁测试账户，无主网 RPC 或 fork；chainId 56 只用于测试网络守卫。外部矿机、挖矿与市场地址使用本机占位代码，因此 **不证明真实采购、NFT 交割、挖矿、收益或市场结算完成**，也不覆盖真实钱包弹窗。
 
-证据包括 `backend-tests-final.txt`、`mainnet-graph-check.json`、`local-business-e2e-result.json`、`withdrawDeposit-revert-trace.json`、`本机业务回归与Gas诊断.md`。最终公开服务是否已切换到这一构建，以发布后的页面、清单及服务验收为准。
+证据包括 `backend-tests-final.txt`、`web-linux-tests.txt`、`web-linux-result.json`、`web-linux-source-manifest.json`、`mainnet-graph-check.json`、`local-business-e2e-result.json`、`withdrawDeposit-revert-trace.json`、`本机业务回归与Gas诊断.md`。最终公开服务是否已切换到这一构建，以发布后的页面、清单及服务验收为准。
 
 ## 用户首轮主网测试顺序
 
