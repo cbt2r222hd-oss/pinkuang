@@ -19,6 +19,13 @@ const miningAbi = new Interface([
 ]);
 const requireValue = (value, text) => { if (!value) throw new Error(text); };
 const same = (a, b) => getAddress(a) === getAddress(b);
+function minerEligibilityIssue(miner) {
+  if (miner.status !== 1n) return `链上矿机不在挖矿中（状态 ${miner.status}），暂不能放入募集池。`;
+  if (miner.optimal) return '链上标记为最优矿机，当前矿池暂不支持采购。';
+  if (miner.verifWeight === 0n) return '链上验证权重为零，暂不能放入募集池。';
+  if (miner.unverWeight !== 0n) return '矿机含未验证权重，当前只支持纯验证权重矿机。';
+  return null;
+}
 export const QUOTE_BASE = '/pinkuang-deploy/firsto-api';
 export const QUOTE_SOURCE = 'https://tapeout.firsto.ai/circuits';
 export function operatorQuoteError(error) {
@@ -69,8 +76,9 @@ export async function readOfficialMinerOnchain(provider, collectionValue, tokenV
   });
   const miner = (await call(MINING, miningAbi, 'getMiner', [key[0]]))[0];
   requireValue(same(miner.circuits, collection) && miner.circuitId === tokenId, '矿机链上身份不一致。');
-  const eligible = miner.status === 1n && !miner.optimal && miner.verifWeight > 0n && miner.unverWeight === 0n;
-  requireValue(allowIneligible || eligible, '仅支持链上正在挖矿、纯验证权重的非最优矿机。');
+  const eligibilityIssue = minerEligibilityIssue(miner);
+  const eligible = eligibilityIssue === null;
+  requireValue(allowIneligible || eligible, eligibilityIssue);
   const official = eligible && listing.valid && listing.id > 0n && listing.price > 0n && same(listing.seller, owner[0])
     ? Object.freeze({ id: listing.id.toString(), seller: getAddress(listing.seller), priceWei: listing.price.toString() }) : null;
   const registry = await readMachineRegistry(provider, { factory: config?.factory ?? config?.manifest?.factory, collection, tokenId, blockTag: tag });

@@ -35,6 +35,17 @@ test('changed owner, task, weight, NFT identity, inactive/optimal/unverified min
     await assert.rejects(checkMinerOnchain(chainFixture(data.quote, changes).provider, data.quote));
 });
 
+test('ineligible miners report the exact chain condition without weakening the purchase gate', async () => {
+  const data = dataFixture();
+  for (const [miner, reason] of [
+    [{ status: 0n }, /不在挖矿中/], [{ optimal: true }, /最优矿机/],
+    [{ verifWeight: 0n }, /验证权重为零/], [{ unverWeight: 1n }, /含未验证权重/],
+  ]) {
+    await assert.rejects(loadOperatorQuote({ collection: data.quote.collection, tokenId: data.quote.tokenId,
+      provider: chainFixture(data.quote, { miner }).provider, mode: 'createPool' }), reason);
+  }
+});
+
 test('inactive or stale official listings remain reference-only and cannot create a fixed draft', async () => {
   const data = dataFixture();
   for (const listing of [{ valid: false }, { id: 0n }, { price: 0n }, { seller: other }]) {
@@ -96,6 +107,19 @@ test('official fixed purchase survives a broken Firsto API; flexible reference s
     provider: rpc.provider, fetcher: api.fetcher, mode: 'createFlexiblePoolChecked' });
   assert.equal(flexible.reference, null); assert.match(flexible.referenceError, /Firsto.*503/);
   assert.throws(() => operatorQuoteDraft(flexible, { mode: 'createFlexiblePoolChecked' }), /503/);
+});
+
+test('stale Firsto mining status does not hide a valid official on-chain listing', async () => {
+  const data = dataFixture();
+  data.quote.status = 'unverified';
+  const rpc = chainFixture(data.quote);
+  const checked = await loadOperatorQuote({ collection: data.quote.collection, tokenId: data.quote.tokenId,
+    provider: rpc.provider, mode: 'createPool' });
+  assert.equal(checked.chain.eligible, true);
+  assert.equal(checked.chain.official.id, '45');
+  assert.equal(checked.quote, null, 'fixed official purchase must not depend on Firsto status');
+  assert(rpc.calls.includes('getMiner'));
+  assert(operatorQuoteDraft(checked));
 });
 
 test('non-official identities are excluded from discovery and cannot reach on-chain quote reads', async () => {
