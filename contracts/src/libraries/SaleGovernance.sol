@@ -61,10 +61,10 @@ library SaleGovernance {
         if (input.currentShares == 0) revert NotMember();
         if (input.price == 0) revert InvalidSalePrice();
         uint256 activeId = s.activeProposalId;
-        uint48 snapshotTs;
-        uint64 endsAt;
-        uint256 snapshotMemberCount;
-        bool joiningRound;
+        uint48 snapshotTs = 0;
+        uint64 endsAt = 0;
+        uint256 snapshotMemberCount = 0;
+        bool joiningRound = false;
         if (activeId != 0) {
             PoolSaleState.Proposal storage active = s.proposals[activeId];
             if (!active.executed && block.timestamp < active.endsAt) {
