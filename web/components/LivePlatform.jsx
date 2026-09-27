@@ -186,6 +186,7 @@ export default function LivePlatform() {
     [account, setAccount] = useState(null),
     [wallet, setWallet] = useState(null);
   const [wallets, setWallets] = useState([]),
+    [walletUiReady, setWalletUiReady] = useState(false),
     [walletInfo, setWalletInfo] = useState(null),
     [connectingId, setConnectingId] = useState(null),
     [connectionError, setConnectionError] = useState("");
@@ -246,6 +247,7 @@ export default function LivePlatform() {
   useEffect(() => {
     const service = createWalletDiscovery(window, setWallets);
     discovery.current = service;
+    setWalletUiReady(true);
     return () => { service.destroy(); discovery.current = null; connectionLock.current = null; };
   }, []);
 
@@ -1277,7 +1279,7 @@ export default function LivePlatform() {
               <option value="en">English</option>
             </select>
             <Button
-              disabled={busy && !connectingId}
+              disabled={!walletUiReady || (busy && !connectingId)}
               onClick={() =>
                 connectingId ? connect() : account ? setModal({ type: "wallet" }) : connect()
               }
