@@ -67,8 +67,8 @@ export function planBudgetAcquisition({ budgetWei, official = [], firsto = [], s
     for (const candidate of candidates) {
       const key = identity(candidate);
       if (seen.has(key)) continue;
-      seen.add(key);
       if (candidate.costWei > budget - spentWei) continue;
+      seen.add(key);
       selected.push(candidate);
       spentWei += candidate.costWei;
       if (candidate.venue === 'official') officialSpentWei += candidate.costWei;

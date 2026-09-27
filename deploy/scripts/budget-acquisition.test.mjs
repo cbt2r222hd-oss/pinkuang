@@ -32,6 +32,12 @@ test('one NFT cannot be bought through both markets and a cheaper Firsto order d
   assert.equal(result.refundableWei, 0n);
 });
 
+test('an unaffordable official ask does not hide an affordable signed ask for the same NFT', () => {
+  const result = plan(500, [miner(1, 600)], [miner(1, 450, 'firsto', { askWei: '445' })]);
+  assert.deepEqual(result.selected.map(item => `${item.venue}:${item.tokenId}`), ['firsto:1']);
+  assert.equal(result.refundableWei, 50n);
+});
+
 test('unaffordable rows are skipped, and the official fee never consumes purchase funds', () => {
   const result = plan(300, [miner(1, 299), miner(2, 300)]);
   assert.deepEqual(result.selected.map(item => item.tokenId), [1n]);
