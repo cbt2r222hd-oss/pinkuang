@@ -107,7 +107,7 @@ export default function LiveOperator({ config, account, wallet, operator, disabl
       {operator.machineRegistry?.supported && !operator.machineRegistry.ready && <p className="live-notice error">矿机唯一性登记尚未完成，暂不能创建新项目或从 Firsto 采购。</p>}
       <div className="operator-tabs"><button className={`btn${mode === 'createPool' ? '' : ' secondary'}`} disabled={frozen} onClick={() => switchMode('createPool')}>指定矿机建池</button><button className={`btn${mode === 'createFlexiblePoolChecked' ? '' : ' secondary'}`} disabled={frozen} onClick={() => switchMode('createFlexiblePoolChecked')}>灵活购机报价建池</button></div>
       {operator.creationPaused && <p className="live-notice error">链上建池已暂停，需要治理权限恢复后才能新建。</p>}
-      <OperatorQuotePicker config={config} mode={mode} disabled={creationBlocked} onApply={applyQuote}/>
+      <OperatorQuotePicker config={config} mode={mode} disabled={frozen || !!preview} onApply={applyQuote}/>
       {autoSelection && <p className="live-notice">已自动填入矿机与募集方案。请核对金额和期限；预览前会重新读取最新报价。</p>}
       {(mode === 'createPool' || autoSelection) && <div className="operator-grid">
         <label>矿机系列<select value={form.circuits} disabled={frozen || !!preview || mode !== 'createPool'} onChange={event => change('circuits', event.target.value)}>{collections.map(([name, address]) => <option key={address} value={address}>{name}</option>)}</select></label>
@@ -130,4 +130,3 @@ export default function LiveOperator({ config, account, wallet, operator, disabl
     </>}
   </section>;
 }
-

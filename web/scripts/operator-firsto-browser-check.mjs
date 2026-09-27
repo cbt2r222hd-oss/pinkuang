@@ -79,10 +79,14 @@ try {
   await page.getByLabel('矿池合约', { exact: true }).fill(f.pool);
   assert(await page.getByRole('button', { name: '预览创建矿池', exact: true }).isDisabled());
   assert(await page.getByRole('button', { name: '获取 Firsto 订单并预览采购', exact: true }).isDisabled());
+  assert(await page.getByRole('button', { name: '刷新报价', exact: true }).isEnabled());
+  await page.getByRole('button', { name: '核对并选择', exact: true }).click();
+  await page.getByText('当前工厂版本尚未开放 Firsto 合约采购。', { exact: true }).waitFor();
+  assert(await page.getByRole('button', { name: '填入建池表单', exact: true }).isDisabled());
   await page.getByRole('button', { name: '灵活购机报价建池', exact: true }).click();
   assert(await page.getByRole('button', { name: '预览创建矿池', exact: true }).isDisabled());
   await page.screenshot({ path: join(output, 'old-factory-creation-blocked.png'), fullPage: true, animations: 'disabled' });
-  checks.push('old factory disables fixed/flexible creation and Firsto while explaining upgrade requirement');
+  checks.push('old factory allows read-only quote checks but blocks applying the quote, fixed/flexible creation and Firsto purchase');
   f.state.old = false; f.state.ready = false;
   await page.getByRole('button', { name: '刷新权限', exact: true }).click();
   await page.getByText('矿机唯一性登记尚未完成，暂不能创建新项目或从 Firsto 采购。', { exact: true }).waitFor();
