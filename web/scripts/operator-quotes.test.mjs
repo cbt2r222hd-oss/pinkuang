@@ -2,9 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ZeroAddress, getAddress } from 'ethers';
 import { dataFixture, chainFixture, apiFixture, MARKET, other, blockHash, config } from './operator-quotes-fixture.mjs';
-import { checkMinerOnchain as checkMiner, loadOperatorQuote as loadQuote, listOperatorQuotes, operatorQuoteDraft, operatorQuoteError, parseOperatorImport } from '../lib/operator-quotes.mjs';
+import { checkMinerOnchain as checkMiner, loadOperatorQuote as loadQuote, listOperatorQuotes, listingDailyCapacityPrice, operatorQuoteDraft, operatorQuoteError, parseOperatorImport } from '../lib/operator-quotes.mjs';
 const checkMinerOnchain = (provider, quote) => checkMiner(provider, quote, { config });
 const loadOperatorQuote = input => loadQuote({ config, ...input });
+
+test('listing daily capacity price divides the displayed ask by daily BEM with exact decimal arithmetic', () => {
+  assert.equal(listingDailyCapacityPrice('39441600000000000', '432000'), '9.1300');
+  assert.equal(listingDailyCapacityPrice('123456789012345678', '100000000'), '0.1235');
+  assert.equal(listingDailyCapacityPrice('1000000000000000000', '300000000'), '0.3333');
+  assert.equal(listingDailyCapacityPrice('1', '1'), '<0.0001');
+  for (const [ask, daily] of [[null, '100000000'], ['1000000000000000000', null], ['0', '100000000'], ['1000000000000000000', '0']])
+    assert.equal(listingDailyCapacityPrice(ask, daily), null);
+  assert.throws(() => listingDailyCapacityPrice('-1', '100000000'));
+});
 
 test('quote selection uses exact official NFT/Mining/Market ABI and pins every read to one BSC block', async () => {
   for (const series of ['TapeOut', 'Behemoth']) {
