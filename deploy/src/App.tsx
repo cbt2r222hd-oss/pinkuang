@@ -165,6 +165,7 @@ export default function App() {
     return new DeploymentEngine(selected.provider, bundle, {
       readLatest: () => journal.readLatestDeployment(),
       persist: (value: DeploymentSnapshot) => journal.saveDeployment(value),
+      assertCurrentArtifact: digest => journal.assertCurrentArtifact(digest),
       onUpdate: (value: DeploymentSnapshot) => { setSnapshot(JSON.parse(JSON.stringify(value))); },
     });
   };
