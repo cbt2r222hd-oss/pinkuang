@@ -236,7 +236,8 @@ export async function readKeeperPool(provider, options) {
   if (policy.enabled && (policy.config.minVerifiedWeight === 0n || params.priceCap === 0n)) throw new Error('Invalid flexible-purchase constraints.');
   return { ...check, blockNumber: block.number, blockGasLimit: block.gasLimit, enabled: policy.enabled, state, circuits: params.circuits, circuitId: params.circuitId, priceCap: params.priceCap,
     purchaseDeadline: params.purchaseDeadline, taskId: model.taskId, referenceVerifiedWeight: referenceWeight, minVerifiedWeight: policy.config.minVerifiedWeight,
-    referencePriceWei: policy.config.referencePriceWei, referenceCircuitId: policy.referenceCircuitId };
+    referencePriceWei: policy.config.referencePriceWei,
+    referenceCircuitId: policy.enabled ? policy.referenceCircuitId : params.circuitId };
 }
 
 export async function verifyFirstoCandidate(provider, candidate, constraints) {
@@ -739,6 +740,9 @@ async function runKeeperCycleSingle(provider, options, signer = null, fetcher = 
 /** The automatic route checks every discovered official listing before a signed Firsto order.
  * A failed or incomplete official scan is not proof that the official market has no suitable miner. */
 export async function runKeeperCycle(provider, options, signer = null, fetcher = fetch, runtime = createKeeperRuntime()) {
+  if (options.venue === 'firsto-signed' && options.send && !options.speedUp && !options.rebroadcast && !options.cancelPending) {
+    throw new Error('Firsto signed mode cannot send a new purchase without the official-first auto route.');
+  }
   if (options.venue !== 'auto') return runKeeperCycleSingle(provider, options, signer, fetcher, runtime);
   const stopped = stoppedResult(runtime, 'cycle');
   if (stopped) return stopped;
@@ -768,25 +772,42 @@ export async function runKeeperCycle(provider, options, signer = null, fetcher =
     official = await runKeeperCycleSingle(provider, officialOptions, signer, fetcher, runtime.autoOfficial);
     if (official.status !== 'no-executable-official-candidate-in-prepared-queue') return official;
   }
-  const discovery = runtime.autoOfficial.discovery;
-  const incomplete = runtime.autoOfficial.constraints?.enabled
-    && (!discovery?.officialSnapshotComplete || runtime.autoOfficial.refreshError
-      || Date.now() - runtime.autoOfficial.lastRefreshCompleted > Math.max(60_000, (options.refreshInterval ?? 30) * 2_000)
-      || (discovery.generatedAt && Date.now() - Date.parse(discovery.generatedAt) > MAX_OFFICIAL_SNAPSHOT_AGE_MS));
-  const uncertain = official.skipped?.some(item => item.reason === 'live-official-listing-read-failed'
-    || item.reason === 'purchase-simulation-reverted-or-listing-changed');
-  if (incomplete || uncertain) return { status: 'official-priority-unverified', terminal: false,
-    official, message: 'Official listings could not be fully ruled out; Firsto fallback is paused.' };
-  if (runtime.autoOfficial.constraints?.enabled) {
-    try {
-      const boundary = await verifyOfficialSnapshotBoundary(provider, discovery.maxId);
-      if (!boundary.complete) throw new Error('Official market added listings after the scan; refresh before Firsto fallback.');
+  const priorityCheck = async current => {
+    const discovery = runtime.autoOfficial.discovery;
+    const incomplete = runtime.autoOfficial.constraints?.enabled
+      && (!discovery?.officialSnapshotComplete || runtime.autoOfficial.refreshError
+        || Date.now() - runtime.autoOfficial.lastRefreshCompleted > Math.max(60_000, (options.refreshInterval ?? 30) * 2_000)
+        || (discovery.generatedAt && Date.now() - Date.parse(discovery.generatedAt) > MAX_OFFICIAL_SNAPSHOT_AGE_MS));
+    const uncertain = current.skipped?.some(item => item.reason === 'live-official-listing-read-failed'
+      || item.reason === 'purchase-simulation-reverted-or-listing-changed');
+    if (incomplete || uncertain) return { error: 'Official listings could not be fully ruled out; Firsto fallback is paused.' };
+    if (runtime.autoOfficial.constraints?.enabled) {
+      try {
+        const boundary = await verifyOfficialSnapshotBoundary(provider, discovery.maxId);
+        if (!boundary.complete) throw new Error('Official market added listings after the scan; refresh before Firsto fallback.');
+      } catch (error) { return { error: String(error?.message || 'Official listing index changed before Firsto fallback.').slice(0, 250) }; }
     }
-    catch (error) { return { status: 'official-priority-unverified', terminal: false, official,
-      message: String(error?.message || 'Official listing index changed before Firsto fallback.').slice(0, 250) }; }
+    return { discovery };
+  };
+  const priorityFailure = message => ({ status: 'official-priority-unverified', terminal: false, official, message });
+  let priority = await priorityCheck(official);
+  if (priority.error) return priorityFailure(priority.error);
+  // Prepare the exact signed order without signing. While Firsto discovery runs,
+  // an older official listing can be repriced without changing nextListingId().
+  const preview = await runKeeperCycleSingle(provider, { ...firstoOptions, send: false, once: true }, null, fetcher, runtime.autoFirsto);
+  if (preview.status !== 'dry-run-ready') return { ...preview, purchaseSequence: 'official-then-firsto', officialScan: priority.discovery ?? null };
+  if (runtime.autoOfficial.constraints?.enabled) {
+    if (runtime.autoOfficial.refreshTask) await runtime.autoOfficial.refreshTask;
+    const previousDiscovery = runtime.autoOfficial.discovery;
+    await startCandidateRefresh(provider, officialOptions, runtime.autoOfficial.constraints, runtime.autoOfficial, fetcher);
+    if (runtime.autoOfficial.discovery === previousDiscovery) return priorityFailure('Fresh official-market recheck failed before Firsto purchase.');
   }
+  official = await runKeeperCycleSingle(provider, officialOptions, signer, fetcher, runtime.autoOfficial);
+  if (official.status !== 'no-executable-official-candidate-in-prepared-queue') return official;
+  priority = await priorityCheck(official);
+  if (priority.error) return priorityFailure(priority.error);
   const firsto = await runKeeperCycleSingle(provider, { ...firstoOptions, once: true }, signer, fetcher, runtime.autoFirsto);
-  return { ...firsto, purchaseSequence: 'official-then-firsto', officialScan: discovery ?? null };
+  return { ...firsto, purchaseSequence: 'official-then-firsto', officialScan: priority.discovery ?? null };
 }
 
 function help() {
