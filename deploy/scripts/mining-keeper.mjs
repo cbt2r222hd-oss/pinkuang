@@ -178,7 +178,7 @@ export async function runMiningCycle(provider, options, signer = null, fetcher =
       return { status: 'mining-active-but-quality-changed-review-required', circuitId: state.circuitId,
         verifiedWeight: state.miner.verifWeight, unverifiedWeight: state.miner.unverWeight };
     }
-    if (journal.transaction?.phase === 'confirmed' && journal.miningStage !== 'monitoring') {
+    if (options.send && journal.transaction?.phase === 'confirmed' && journal.miningStage !== 'monitoring') {
       journal.miningStage = 'monitoring'; journal.armRetries = 0; writeJournal(options.journal, journal);
     }
     return { status: 'mining-active', circuitId: state.circuitId };
@@ -194,6 +194,7 @@ export async function runMiningCycle(provider, options, signer = null, fetcher =
     }
     const age = state.blockNumber - anchor;
     if (age > 60) {
+      if (!options.send) return { status: 'arm-anchor-expired-dry-run', anchor, age };
       journal.armRetries = (journal.armRetries ?? 0) + 1;
       if (journal.armRetries > 2) return { status: 'arm-anchor-expired-review-required', anchor, age };
       journal.miningStage = 'monitoring'; writeJournal(options.journal, journal);
