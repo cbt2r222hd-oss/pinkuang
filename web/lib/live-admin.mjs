@@ -1,10 +1,89 @@
 import { Interface, getAddress, ZeroAddress, toQuantity } from 'ethers';
-import { abi, uint, checkedPoolCreation, readPoolSnapshot } from './chain-client.mjs';
+import { abi, ARTIFACT_DIGEST, uint, checkedPoolCreation, readPoolSnapshot } from './chain-client.mjs';
 import { loadOperatorQuote, readMachineRegistry, readOfficialMinerOnchain } from './operator-quotes.mjs';
+import { fetchLiveJson } from './live-config.mjs';
 import { decodeFirstoOrder, verifyFirstoSignedAsk } from '../../deploy/src/firsto-purchase.mjs';
 
 const need = (value, message) => { if (!value) throw new Error(message); };
 const same = (a, b) => getAddress(a) === getAddress(b);
+const OFFICIAL_MARKET = '0x6feEbbEbC07BcB90bd1Ac8b0CF9BaA4f0fF2B46f';
+const officialMarket = new Interface([
+  'function listingFor(address,uint256) view returns(uint256 id,address seller,uint96 price,bool valid)',
+  'function listingView(uint256) view returns(address seller,address circuits,uint256 tokenId,uint96 price,uint16 feeBps,bool valid)',
+]);
+const readVault = async (request, pool, method, blockTag) => abi.PoolVault.decodeFunctionResult(method,
+  await request('eth_call', [{ to: pool, data: abi.PoolVault.encodeFunctionData(method) }, blockTag]));
+
+function officialCandidateRevert(error) {
+  const data = error?.data ?? error?.error?.data;
+  return error?.code === 3 || error?.code === 'CALL_EXCEPTION'
+    || typeof data === 'string' && /^0x[\da-f]*$/i.test(data) && /revert/i.test(String(error?.message ?? ''))
+    || /^execution reverted(?:\b|:)/i.test(String(error?.message ?? ''));
+}
+
+async function findOfficialAlternative({ request, config, pool, row, status, tag, tx }) {
+  const [selection, model, referenceWeight] = await Promise.all([
+    readVault(request, pool, 'flexiblePurchase', tag), readVault(request, pool, 'purchaseModel', tag),
+    readVault(request, pool, 'purchaseReferenceWeight', tag),
+  ]);
+  if (!selection.enabled) return null; // Fixed pools may only buy their original NFT.
+  need(selection.referenceCircuitId === row.params.circuitId && model.initialized && referenceWeight[0] > 0n,
+    '矿池灵活购机模型未完成链上锁定。');
+  const policy = selection.config;
+  const expected = { circuits: row.params.circuits, taskId: model.taskId.toString(),
+    minVerifiedWeight: policy.minVerifiedWeight.toString(), referenceVerifiedWeight: referenceWeight[0].toString(),
+    referencePriceWei: policy.referencePriceWei.toString(), priceCap: row.params.priceCap.toString() };
+  need(uint(expected.minVerifiedWeight) > 0n && uint(expected.referencePriceWei) > 0n,
+    '矿池灵活购机约束无效。');
+  const query = new URLSearchParams({ pool, block: status.blockNumber.toString(), hash: status.blockHash });
+  const result = await fetchLiveJson(`${config.basePath ?? ''}/api/live/official-candidates?${query}`,
+    { maxBytes: 512000, timeoutMs: 16000 });
+  need(result?.complete === true && result.chainId === 56 && same(result.factory, config.factory ?? config.manifest?.factory)
+    && result.artifactDigest?.toLowerCase() === ARTIFACT_DIGEST.toLowerCase()
+    && (config.manifest?.artifactDigest === undefined || config.manifest.artifactDigest.toLowerCase() === ARTIFACT_DIGEST.toLowerCase())
+    && same(result.pool, pool) && BigInt(result.blockNumber) === status.blockNumber
+    && result.blockHash === status.blockHash && result.flexible === true,
+  '官网候选扫描不完整或不属于当前链上矿池与区块。');
+  need(Object.entries(expected).every(([key, value]) => key === 'circuits' ? same(result.model?.[key], value)
+    : result.model?.[key] === value), '官网候选模型与矿池锁定参数不一致。');
+  need(Array.isArray(result.candidates) && result.candidates.length <= 1000, '官网候选数据无效。');
+  const seen = new Set();
+  let rejectedOfficialSimulation = false;
+  for (const hint of result.candidates) {
+    const tokenId = uint(hint.tokenId), listingId = uint(hint.listingId), priceWei = uint(hint.priceWei);
+    const verifiedWeight = uint(hint.verifiedWeight);
+    need(same(hint.collection, expected.circuits) && listingId > 0n
+      && priceWei > 0n && priceWei <= row.params.priceCap && priceWei <= row.totalRaised
+      && verifiedWeight >= uint(expected.minVerifiedWeight)
+      && priceWei <= (verifiedWeight >= uint(expected.referenceVerifiedWeight)
+        ? uint(expected.referencePriceWei)
+        : uint(expected.referencePriceWei) * verifiedWeight / uint(expected.referenceVerifiedWeight))
+      && !seen.has(tokenId.toString()), '官网候选身份、报价或权重无效。');
+    if (tokenId === row.params.circuitId) continue; // The original was checked with NFT ownership above.
+    seen.add(tokenId.toString());
+    const listingFor = officialMarket.decodeFunctionResult('listingFor', await request('eth_call',
+      [{ to: OFFICIAL_MARKET, data: officialMarket.encodeFunctionData('listingFor', [expected.circuits, tokenId]) }, tag]));
+    need(listingFor.valid && listingFor.id === listingId && same(listingFor.seller, hint.seller)
+      && listingFor.price === priceWei, '官网候选挂单已变化，请重新扫描。');
+    const live = officialMarket.decodeFunctionResult('listingView', await request('eth_call',
+      [{ to: OFFICIAL_MARKET, data: officialMarket.encodeFunctionData('listingView', [listingId]) }, tag]));
+    need(live.valid && same(live.seller, hint.seller) && same(live.circuits, expected.circuits)
+      && live.tokenId === tokenId && live.price === priceWei, '官网候选挂单明细与当前矿机不一致。');
+    const transaction = tx(pool, abi.PoolVault, 'buyAlternativeFromMarket', [listingId]);
+    const { chainId: _chainId, ...unsigned } = transaction;
+    try { await request('eth_call', [unsigned, tag]); }
+    catch (error) {
+      if (!officialCandidateRevert(error)) throw error;
+      rejectedOfficialSimulation = true;
+      continue;
+    }
+    return { transaction, official: { id: listingId.toString(), seller: getAddress(live.seller),
+      collection: getAddress(live.circuits), tokenId: tokenId.toString(), priceWei: priceWei.toString(),
+      verifiedWeight: verifiedWeight.toString() } };
+  }
+  need(!rejectedOfficialSimulation, '官网候选购机模拟未通过，不能据此判定官网无货；请重新扫描或人工核对。');
+  return null;
+}
 
 /** An unchanged listing ID can still be repriced before the wallet confirmation. */
 export function sameAdminPurchasePreview(previous, current) {
@@ -12,7 +91,10 @@ export function sameAdminPurchasePreview(previous, current) {
   return !!previous.official && !!current.official
     && previous.official.id === current.official.id
     && previous.official.priceWei === current.official.priceWei
-    && same(previous.official.seller, current.official.seller);
+    && same(previous.official.seller, current.official.seller)
+    && (previous.official.tokenId ?? null) === (current.official.tokenId ?? null)
+    && (previous.official.collection ?? null) === (current.official.collection ?? null)
+    && (previous.official.verifiedWeight ?? null) === (current.official.verifiedWeight ?? null);
 }
 export const OFFICIAL_COLLECTIONS = Object.freeze([
   '0xb1024b89886B9a34Aa4ff5F31C411D708b20a14C',
@@ -94,16 +176,32 @@ export async function prepareAdminAction(input) {
       if (frozenOrder) need(same(frozenOrder.ask.collection, row.params.circuits)
         && BigInt(frozenOrder.ask.tokenId) === row.params.circuitId, 'Firsto 订单不是矿池原目标矿机。');
       const officialCheck = await readOfficialMinerOnchain(provider, row.params.circuits, row.params.circuitId,
-        { config, blockTag: tag });
+        { config, blockTag: tag, allowIneligible: true });
       need(officialCheck.blockHash === status.blockHash, '官网矿机核对区块不一致。');
-      const official = officialCheck.official && BigInt(officialCheck.official.priceWei) <= row.params.priceCap
+      let official = officialCheck.official && BigInt(officialCheck.official.priceWei) <= row.params.priceCap
         && BigInt(officialCheck.official.priceWei) <= row.totalRaised ? officialCheck.official : null;
+      if (official) {
+        const direct = tx(target, abi.PoolVault, 'buyFromMarket', [uint(official.id)]);
+        const { chainId: _chainId, ...unsigned } = direct;
+        try { await request('eth_call', [unsigned, tag]); }
+        catch (error) {
+          if (!officialCandidateRevert(error)) throw error;
+          throw new Error('官网原目标挂单仍符合价格与身份条件，但购机模拟未通过；请重新扫描或人工核对。');
+        }
+      }
       if (official) {
         need(kind !== 'buyFromFirsto', '官网原目标仍有符合价格上限的挂单，请先从官网采购。');
         resolvedKind = 'buyFromMarket'; selectedListingId = official.id;
         transaction = tx(target, abi.PoolVault, resolvedKind, [uint(official.id)]);
-        details = { official, procurementRoute: 'official' };
+        details = { official: { ...official, collection: row.params.circuits, tokenId: row.params.circuitId.toString() }, procurementRoute: 'official' };
       } else {
+        const alternative = await findOfficialAlternative({ request, config, pool: target, row, status, tag, tx });
+        if (alternative) {
+          need(kind !== 'buyFromFirsto', '官网市场仍有可执行的同任务替代矿机，请先从官网采购。');
+          resolvedKind = 'buyAlternativeFromMarket'; selectedListingId = alternative.official.id;
+          transaction = alternative.transaction;
+          details = { official: alternative.official, procurementRoute: 'official-alternative' };
+        } else {
         const registry = officialCheck.registry;
         need(registry.supported && registry.ready, '当前工厂版本尚未开放 Firsto 采购，或矿机唯一性登记未完成。');
         need(same(registry.pool, target), `矿机登记不属于此矿池，当前登记项目：${registry.pool}。`);
@@ -125,6 +223,7 @@ export async function prepareAdminAction(input) {
         resolvedKind = 'buyFromFirsto';
         transaction = tx(target, abi.PoolVault, resolvedKind, [0, frozenFirstoOrder]);
         details = { firsto: order, procurementRoute: 'firsto' };
+        }
       }
     } else if (kind === 'buyFromMarket' || kind === 'buyAlternativeFromMarket') {
       need(row.state === 1n && row.params && status.timestamp < row.params.purchaseDeadline, '矿池未募满或购机期限已过。');

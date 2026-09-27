@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Contract, JsonRpcProvider, getAddress, keccak256, verifyMessage, ZeroAddress } from 'ethers';
 import { abi, ARTIFACT_DIGEST } from '../lib/chain-client.mjs';
+import { fetchOfficialCandidates } from '../../deploy/scripts/official-market-discovery.mjs';
 
 const CHAIN_ID = 56n;
 const COOKIE = 'bemine_live';
@@ -14,6 +15,15 @@ const MAX_CHALLENGES = 1000;
 const MAX_SESSIONS = 1000;
 const MAX_HASHES = 16;
 const PREPARED_EXPIRES_MS = 10 * 60 * 1000;
+const OFFICIAL_CACHE_MS = 5_000;
+const OFFICIAL_SCAN_MS = 12_000;
+const MAX_OFFICIAL_SCANS = 2;
+const OFFICIAL_REQUEST_BURST = 6;
+const OFFICIAL_REQUEST_REFILL_MS = 500;
+const OFFICIAL_COLLECTIONS = new Set([
+  '0xb1024b89886b9a34aa4ff5f31c411d708b20a14c',
+  '0x1f5cb4aeae1807bf60c3b9c0d8adbcc14e91f12c',
+]);
 const MAX_UINT256 = (1n << 256n) - 1n;
 const HASH = /^0x[\da-fA-F]{64}$/;
 const ZERO_VALUE_ACTIONS = new Set(['withdrawDeposit', 'withdrawBnb', 'harvest', 'claim']);
@@ -143,18 +153,30 @@ export function liveConfiguration(env = process.env) {
 }
 
 /** The live API persists every intent before asking for a wallet signature. It never signs or sends. */
-export function createLiveApi(config, { provider = new JsonRpcProvider(config.rpc, 56), fetchImpl = fetch, now = Date.now, onError = () => {} } = {}) {
+export function createLiveApi(config, { provider = new JsonRpcProvider(config.rpc, 56), fetchImpl = fetch,
+  discoverOfficial = fetchOfficialCandidates, now = Date.now, onError = () => {} } = {}) {
   const factory = getAddress(config.factory);
   const db = privateDatabase(config.dbPath);
   const challenges = new Map(), sessions = new Map();
   const registry = new Contract(factory, abi.PoolFactory, provider);
   const marketAddress = getAddress(config.expected.code.shareMarket.address);
   const marketContract = new Contract(marketAddress, abi.ShareMarket, provider);
-  let cachedIdentity = null, cacheUntil = 0;
-  const knownPool = async pool => {
-    if (await registry.isPool(pool) !== true) fail(400, 'Pool is not registered by the configured Factory.');
+  let cachedIdentity = null, cacheUntil = 0, activeOfficialScans = 0;
+  let officialRequestTokens = OFFICIAL_REQUEST_BURST, officialRequestRefillAt = now();
+  const officialCache = new Map(), officialScans = new Map();
+  function consumeOfficialRequestBudget() {
+    const time = now();
+    officialRequestTokens = Math.min(OFFICIAL_REQUEST_BURST,
+      officialRequestTokens + Math.max(0, time - officialRequestRefillAt) / OFFICIAL_REQUEST_REFILL_MS);
+    officialRequestRefillAt = time;
+    if (officialRequestTokens < 1) fail(429, 'Official market preview is busy; retry shortly.');
+    officialRequestTokens -= 1;
+  }
+  const knownPool = async (pool, blockTag) => {
+    const overrides = blockTag === undefined ? [] : [{ blockTag }];
+    if (await registry.isPool(pool, ...overrides) !== true) fail(400, 'Pool is not registered by the configured Factory.');
     const vault = new Contract(pool, abi.PoolVault, provider);
-    const [poolFactory, officialFactory] = await Promise.all([vault.factory(), vault.OFFICIAL_FACTORY()]);
+    const [poolFactory, officialFactory] = await Promise.all([vault.factory(...overrides), vault.OFFICIAL_FACTORY(...overrides)]);
     if (lower(poolFactory) !== lower(factory) || lower(officialFactory) !== lower(factory)) fail(400, 'Pool Factory identity mismatch.');
     return vault;
   };
@@ -291,6 +313,117 @@ export function createLiveApi(config, { provider = new JsonRpcProvider(config.rp
     cacheUntil = now() + 10000;
     return cachedIdentity;
   }
+  async function pinnedOfficialBlock(number, hash) {
+    const block = await provider.getBlock(number);
+    if (!block || block.number !== number || !HASH.test(block.hash ?? '') ||
+        block.hash.toLowerCase() !== hash || !Number.isSafeInteger(block.timestamp)) {
+      fail(409, 'Requested BSC block changed or is unavailable.');
+    }
+    return block;
+  }
+  async function officialCandidates(url) {
+    const keys = [...url.searchParams.keys()];
+    if (keys.length !== 3 || new Set(keys).size !== 3 || keys.some(key => !['pool', 'block', 'hash'].includes(key))) {
+      fail(400, 'Exactly pool, block and hash are required.');
+    }
+    let pool;
+    try { pool = getAddress(url.searchParams.get('pool')); }
+    catch { fail(400, 'Invalid pool address.'); }
+    const blockText = url.searchParams.get('block'), blockHash = url.searchParams.get('hash');
+    if (pool === ZeroAddress || !/^[1-9]\d*$/.test(blockText ?? '') ||
+        !Number.isSafeInteger(Number(blockText)) || !HASH.test(blockHash ?? '')) {
+      fail(400, 'Invalid pool, block number or block hash.');
+    }
+    const blockNumber = Number(blockText), hash = blockHash.toLowerCase();
+    // Bound anonymous requests before identity() or any chain RPC. The scan limit below
+    // separately caps expensive external discovery, including distinct pool/block keys.
+    consumeOfficialRequestBudget();
+    const deployment = await identity({ fresh: true });
+    const block = await pinnedOfficialBlock(blockNumber, hash);
+    const vault = await knownPool(pool, blockNumber);
+    const opts = { blockTag: blockNumber };
+    const [state, params, policy, purchaseModel, referenceWeight] = await Promise.all([
+      vault.state(opts), vault.params(opts), vault.flexiblePurchase(opts),
+      vault.purchaseModel(opts), vault.purchaseReferenceWeight(opts),
+    ]);
+    if (state !== 1n || BigInt(block.timestamp) >= params.purchaseDeadline) {
+      fail(409, 'Pool is not Funded or its purchase window has expired.');
+    }
+    const response = { complete: true, chainId: 56, factory: deployment.factory,
+      artifactDigest: deployment.artifactDigest, pool, blockNumber: String(blockNumber), blockHash: hash,
+      flexible: policy.enabled, model: null, candidates: [] };
+    if (!policy.enabled) {
+      await pinnedOfficialBlock(blockNumber, hash);
+      return response;
+    }
+    if (!OFFICIAL_COLLECTIONS.has(params.circuits.toLowerCase()) ||
+        policy.referenceCircuitId !== params.circuitId || !purchaseModel.initialized ||
+        referenceWeight === 0n || policy.config.minVerifiedWeight === 0n ||
+        policy.config.referencePriceWei === 0n || params.priceCap === 0n) {
+      fail(503, 'Pool purchase model is incomplete.');
+    }
+    const constraints = {
+      circuits: getAddress(params.circuits), taskId: purchaseModel.taskId,
+      minVerifiedWeight: policy.config.minVerifiedWeight,
+      referenceVerifiedWeight: referenceWeight,
+      referencePriceWei: policy.config.referencePriceWei, priceCap: params.priceCap,
+    };
+    response.model = Object.fromEntries(Object.entries(constraints).map(([key, value]) =>
+      [key, typeof value === 'bigint' ? value.toString() : value]));
+    const key = `${pool.toLowerCase()}:${hash}`;
+    const cached = officialCache.get(key);
+    if (cached && cached.expires > now()) {
+      await pinnedOfficialBlock(blockNumber, hash);
+      return { ...response, candidates: cached.candidates };
+    }
+    if (cached) officialCache.delete(key);
+    let scan = officialScans.get(key);
+    if (!scan) {
+      if (activeOfficialScans >= MAX_OFFICIAL_SCANS) fail(503, 'Official market scan is busy; retry shortly.');
+      activeOfficialScans += 1;
+      const abort = new AbortController();
+      const work = Promise.resolve().then(() => discoverOfficial(provider,
+        { blockNumber, signal: abort.signal, now: now() }, constraints, fetchImpl));
+      // The slot remains occupied until the underlying scan stops, even if a dependency ignores cancellation.
+      work.finally(() => { activeOfficialScans -= 1; }).catch(() => {});
+      scan = Promise.race([work, new Promise((_, reject) => {
+        const timer = setTimeout(() => { abort.abort(); reject(new Error('Official market scan timed out.')); }, OFFICIAL_SCAN_MS);
+        work.finally(() => clearTimeout(timer)).catch(() => {});
+      })]);
+      officialScans.set(key, scan);
+      scan.finally(() => { if (officialScans.get(key) === scan) officialScans.delete(key); }).catch(() => {});
+    }
+    let found;
+    try { found = await scan; }
+    catch { fail(503, 'Complete official market scan unavailable.'); }
+    if (found?.complete !== true || found.chainBlock !== blockNumber || !Array.isArray(found.candidates)) {
+      fail(503, 'Complete official market scan unavailable.');
+    }
+    let candidates;
+    try {
+      candidates = found.candidates.map(candidate => ({
+        listingId: BigInt(candidate.listingId).toString(), collection: getAddress(candidate.collection),
+        tokenId: BigInt(candidate.tokenId).toString(), seller: getAddress(candidate.seller),
+        priceWei: BigInt(candidate.priceWei).toString(), verifiedWeight: BigInt(candidate.verifiedWeight).toString(),
+      }));
+    } catch { fail(503, 'Official market scan returned an invalid candidate.'); }
+    if (candidates.some(candidate => candidate.collection.toLowerCase() !== constraints.circuits.toLowerCase() ||
+        BigInt(candidate.listingId) < 1n || BigInt(candidate.priceWei) < 1n ||
+        BigInt(candidate.priceWei) > constraints.priceCap ||
+        BigInt(candidate.verifiedWeight) < constraints.minVerifiedWeight || candidate.seller === ZeroAddress ||
+        BigInt(candidate.priceWei) > (BigInt(candidate.verifiedWeight) >= constraints.referenceVerifiedWeight
+          ? constraints.referencePriceWei
+          : constraints.referencePriceWei * BigInt(candidate.verifiedWeight) / constraints.referenceVerifiedWeight))) {
+      fail(503, 'Official market scan returned an invalid candidate.');
+    }
+    await pinnedOfficialBlock(blockNumber, hash);
+    officialCache.set(key, { candidates, expires: now() + OFFICIAL_CACHE_MS });
+    if (officialCache.size > 64) {
+      for (const [item, entry] of officialCache) if (entry.expires <= now()) officialCache.delete(item);
+      if (officialCache.size > 64) officialCache.delete(officialCache.keys().next().value);
+    }
+    return { ...response, candidates };
+  }
   function accountOf(req) {
     const token = cookieToken(req);
     const session = sessions.get(token);
@@ -341,6 +474,9 @@ export function createLiveApi(config, { provider = new JsonRpcProvider(config.rp
       if (method === 'POST' && req.headers.origin !== config.origin) fail(403, 'Exact Origin required.');
       if (method === 'GET' && url.pathname === '/api/live/config') {
         return json(res, 200, { ...await identity(), journal: true });
+      }
+      if (method === 'GET' && url.pathname === '/api/live/official-candidates') {
+        return json(res, 200, await officialCandidates(url));
       }
       if (method === 'GET' && url.pathname.startsWith('/api/live/index/')) {
         const suffix = url.pathname.slice('/api/live/index'.length);

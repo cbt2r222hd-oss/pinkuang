@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { operatorFirstoFixture } from './operator-firsto-fixture.mjs';
 import { FIXTURE_OTHER_ACCOUNT } from './live-browser-fixture.mjs';
+import { ARTIFACT_DIGEST } from '../lib/chain-client.mjs';
 const { chromium } = await import(process.env.BEMINE_PLAYWRIGHT_MODULE || 'playwright');
 const base = process.env.BEMINE_TEST_URL || 'http://127.0.0.1:3109/bemine/';
 assert(['127.0.0.1', 'localhost'].includes(new URL(base).hostname));
@@ -25,6 +26,13 @@ try {
     else if (url.pathname.includes('/firsto-api/')) {
       const response = await f.api.fetcher(request.url(), { method: request.method(), credentials: 'omit' });
       return route.fulfill({ status: response.status, contentType: 'application/json', body: await response.text() });
+    } else if (url.pathname.endsWith('/api/live/official-candidates')) {
+      result = { complete: true, chainId: 56, factory: f.config.factory, artifactDigest: ARTIFACT_DIGEST,
+        pool: f.pool, blockNumber: '100', blockHash: `0x${'12'.repeat(32)}`, flexible: true,
+        model: { circuits: f.data.quote.collection, taskId: '220', minVerifiedWeight: '50',
+          referenceVerifiedWeight: '61', referencePriceWei: '10000000000000000', priceCap: f.rows[0].params.priceCap.toString() },
+        candidates: [{ listingId: '46', collection: f.data.quote.collection, tokenId: '8',
+          seller: f.source.account, priceWei: '4000000000000000', verifiedWeight: '61' }] };
     } else if (url.pathname.endsWith('/api/rpc')) {
       const payload = request.postDataJSON();
       try { result = { jsonrpc: '2.0', id: payload.id, result: await f.provider.request(payload) }; }
@@ -74,6 +82,16 @@ try {
   await page.screenshot({ path: join(output, 'firsto-pool-funded-preview.png'), fullPage: true, animations: 'disabled' });
   checks.push('one click reads original target and previews exact seller price, source fee, pool gross and wallet Gas only');
   await modal.getByRole('button', { name: '返回修改', exact: true }).click();
+  f.state.flexible = true; f.state.alternativeListing = { valid: true, price: 4000000000000000n };
+  await page.getByRole('button', { name: '先查官网并预览购机', exact: true }).click();
+  await modal.getByText('从官网市场购入同任务替代矿机', { exact: true }).waitFor();
+  const alternativeText = await modal.innerText();
+  assert.match(alternativeText, /TapeOut #8/); assert.match(alternativeText, /验证产能权重\s*61/);
+  assert.match(alternativeText, /官网预览价未锁定/); assert.match(alternativeText, /仅 Gas/);
+  await page.screenshot({ path: join(output, 'official-alternative-preview.png'), fullPage: true, animations: 'disabled' });
+  checks.push('flexible pool discovers and simulates an official same-task replacement before Firsto, with miner identity and price warning');
+  await modal.getByRole('button', { name: '返回修改', exact: true }).click();
+  f.state.flexible = false; f.state.alternativeListing = null;
   f.state.old = true;
   await page.getByRole('button', { name: '刷新权限', exact: true }).click();
   await page.getByText('当前工厂尚未支持矿机唯一性登记。请等待合约升级后创建新项目；已有项目的读取、退款与提现不受影响。', { exact: true }).waitFor();

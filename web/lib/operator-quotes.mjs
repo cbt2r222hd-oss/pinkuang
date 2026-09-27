@@ -51,7 +51,8 @@ export async function readMachineRegistry(provider, { factory, collection, token
 }
 
 /** The exact NFT can be checked on the official market without an indexer or Firsto API. */
-export async function readOfficialMinerOnchain(provider, collectionValue, tokenValue, { config, blockTag = 'latest' } = {}) {
+export async function readOfficialMinerOnchain(provider, collectionValue, tokenValue,
+  { config, blockTag = 'latest', allowIneligible = false } = {}) {
   const collection = getAddress(collectionValue), tokenId = uint(tokenValue);
   requireValue(Object.values(OFFICIAL_COLLECTIONS).some(value => same(value, collection)), '仅接受已核验的官方矿机合约。');
   const request = (method, params = []) => provider.request({ method, params });
@@ -68,15 +69,16 @@ export async function readOfficialMinerOnchain(provider, collectionValue, tokenV
   });
   const miner = (await call(MINING, miningAbi, 'getMiner', [key[0]]))[0];
   requireValue(same(miner.circuits, collection) && miner.circuitId === tokenId, '矿机链上身份不一致。');
-  requireValue(miner.status === 1n && !miner.optimal && miner.verifWeight > 0n && miner.unverWeight === 0n, '仅支持链上正在挖矿、纯验证权重的非最优矿机。');
-  const official = listing.valid && listing.id > 0n && listing.price > 0n && same(listing.seller, owner[0])
+  const eligible = miner.status === 1n && !miner.optimal && miner.verifWeight > 0n && miner.unverWeight === 0n;
+  requireValue(allowIneligible || eligible, '仅支持链上正在挖矿、纯验证权重的非最优矿机。');
+  const official = eligible && listing.valid && listing.id > 0n && listing.price > 0n && same(listing.seller, owner[0])
     ? Object.freeze({ id: listing.id.toString(), seller: getAddress(listing.seller), priceWei: listing.price.toString() }) : null;
   const registry = await readMachineRegistry(provider, { factory: config?.factory ?? config?.manifest?.factory, collection, tokenId, blockTag: tag });
   const { after, finalChain } = await settleReadRound({ after: () => request('eth_getBlockByNumber', [tag, false]), finalChain: () => request('eth_chainId') });
   requireValue(after?.hash === block.hash && after?.number === block.number && after?.timestamp === block.timestamp
     && BigInt(finalChain) === 56n, '矿机核对期间区块或网络变化，请重试。');
   return Object.freeze({ collection, tokenId: tokenId.toString(), owner: getAddress(owner[0]), taskId: miner.taskId.toString(),
-    verifiedWeight: miner.verifWeight.toString(), official, firsto: null, firstoError: null, registry,
+    verifiedWeight: miner.verifWeight.toString(), eligible, official, firsto: null, firstoError: null, registry,
     blockNumber: BigInt(block.number).toString(), blockHash: block.hash, checkedAt: Date.now() });
 }
 
