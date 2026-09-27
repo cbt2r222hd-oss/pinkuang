@@ -20,6 +20,8 @@ Firsto 全量候选扫描及每笔签名订单的同区块可执行性校验尚�
 
 `contracts/test/unit/BudgetPortfolio.t.sol` 进一步覆盖新项目在 mock 市场的两台原子采购、零台退款、部分失败、双钱包争最后一份、BEM 随份额转让、手动领取后不重复转移、一次合并领取、份额市场买卖双方各 1% 费用、低价出售的地址和 60 份双门槛，以及出售款归属。`contracts/test/unit/TransferableBemRewards.t.sol` 包含 256 轮随机收款/领取/转让的 BEM 守恒测试。源码绑定的 ABI/字节码已加入 `deploy/public/deployment-artifacts.json`，初始升级安全校验已通过。新合约尚未做 Firsto 真实签名订单、BSC fork、新旧版本升级存储布局对比、生产部署脚本及清单、后端索引和前端交易接线验收。
 
+首次远端合约检查在 [run 36332949129](https://github.com/jianfengliao774-sketch/pinkuang/actions/runs/36332949129) 的 Slither `--fail-medium` 阶段失败；编译、442 项单元及不变量测试、升级检查已通过。后续修复把过期出售提案在调用子池前清除，用减法表达整数余数守恒，且仅对持有 `nonReentrant` 锁的跨合约调用、实际 BEM 余额差校验和精确零收款校验附逐行 detector 说明。本机相同 Slither 0.11.5 和 `--fail-medium` 已退出 0；仍需看重新触发的远端 CI 结果，不能将首次失败说成通过。
+
 ## 上链规则
 
 1. 募集目标在建池时固定并可被 100 整除；任一钱包可购买 1–100 份。达标后立刻开放逐台采购，募集预算、单台已付价格、矿机列表及未花余额均为链上状态。

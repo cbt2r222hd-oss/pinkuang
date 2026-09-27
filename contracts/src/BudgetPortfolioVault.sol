@@ -208,7 +208,10 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
     function buyOfficial(address child, uint256 listingId) external nonReentrant {
         _requireOperatorPurchase();
         (IBudgetChild pool, IPoolVault.PoolParams memory params) = _prepareChild(child);
+        // This entry point holds nonReentrant across every child call and the final budget update.
+        // slither-disable-next-line reentrancy-eth
         pool.deposit{value: params.targetRaise}(100);
+        // slither-disable-next-line reentrancy-eth
         pool.buyFromMarket(listingId);
         _finishChild(pool, params, true);
     }
@@ -216,7 +219,10 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
     function buyFirsto(address child, bytes calldata encodedOrder) external nonReentrant {
         _requireOperatorPurchase();
         (IBudgetChild pool, IPoolVault.PoolParams memory params) = _prepareChild(child);
+        // This entry point holds nonReentrant across every child call and the final budget update.
+        // slither-disable-next-line reentrancy-eth
         pool.deposit{value: params.targetRaise}(100);
+        // slither-disable-next-line reentrancy-eth
         pool.buyFromFirsto(0, encodedOrder);
         _finishChild(pool, params, false);
     }
@@ -286,12 +292,13 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         uint256 refundable = unused - fee;
         refundPerShareWei = refundable / TOTAL_SHARES;
         refundRoundingWei = refundable % TOTAL_SHARES;
+        uint256 totalRefundable = refundable - refundRoundingWei;
         _creditBnb(treasury, fee + refundRoundingWei);
-        if (address(this).balance < totalBnbOwed + refundPerShareWei * TOTAL_SHARES) {
+        if (address(this).balance < totalBnbOwed + totalRefundable) {
             revert AccountingDeficit();
         }
         state = activeChildCount == 0 ? IPoolVault.State.Refunding : IPoolVault.State.Active;
-        emit AcquisitionFinalized(spentWei, fee, refundPerShareWei * TOTAL_SHARES, refundRoundingWei, children.length);
+        emit AcquisitionFinalized(spentWei, fee, totalRefundable, refundRoundingWei, children.length);
     }
 
     function collectChildBem(address child) external nonReentrant returns (uint256 amount) {
@@ -304,6 +311,8 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         if (childState == IPoolVault.State.Active || childState == IPoolVault.State.Listed) {
             // An ordinary claim failure must not trap BEM the child already booked
             // for this project's shares. Controlled sale remains strict in the child.
+            // We verify the actual BEM balance delta below, not the child's reported return values.
+            // slither-disable-next-line unused-return
             try child.harvest() returns (uint256, uint256, uint256, uint256) {}
             catch (bytes memory reason) {
                 emit ChildHarvestFailed(address(child), keccak256(reason));
@@ -311,9 +320,16 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         }
         if (child.claimable(address(this)) == 0) return 0;
         uint256 previous = IERC20(BEM).balanceOf(address(this));
+        // The project is the sole child shareholder; the actual BEM receipt is checked below.
+        // slither-disable-next-line unused-return
         child.claim();
         amount = IERC20(BEM).balanceOf(address(this)) - previous;
+        // The historical balance is a receipt measurement, never an authorization to pay.
+        // All callers hold nonReentrant until this check and ledger update complete.
+        // slither-disable-next-line reentrancy-balance,incorrect-equality
         if (amount == 0) revert AccountingDeficit();
+        // The returned distributed amount excludes retained integer dust; receipt is reported above.
+        // slither-disable-next-line unused-return
         rewards.record(amount);
         emit BemCollected(address(child), amount);
     }
@@ -417,8 +433,12 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         if (pool.state() != IPoolVault.State.Closed || childInfo[child].sold) revert WrongState();
         _collectChildBem(pool);
         uint256 beforeBalance = address(this).balance;
+        // The child was registered at purchase and this entry point holds nonReentrant.
+        // slither-disable-next-line reentrancy-no-eth
         pool.withdrawBnb();
         net = address(this).balance - beforeBalance;
+        // Zero is an exact receipt failure, not a price target.
+        // slither-disable-next-line incorrect-equality
         if (net == 0 || net > proposals[proposalId].price) revert AccountingDeficit();
         uint256 available = net + saleRemainderWei;
         salePerShareWei += available / TOTAL_SHARES;
@@ -434,16 +454,21 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         uint256 proposalId = activeProposalId;
         if (proposalId == 0) revert InvalidProposal();
         SaleProposal storage p = proposals[proposalId];
-        if (!p.executed) {
+        bool executed = p.executed;
+        if (!executed) {
             if (block.timestamp < p.endsAt) revert DeadlineNotReached();
         } else {
             IBudgetChild pool = IBudgetChild(p.child);
             if (pool.state() != IPoolVault.State.Listed || block.timestamp < pool.expiresAt()) {
                 revert DeadlineNotReached();
             }
+        }
+        // Invalidate before calling the child; a failed child call reverts this write.
+        activeProposalId = 0;
+        if (executed) {
+            IBudgetChild pool = IBudgetChild(p.child);
             pool.cancelExpired();
         }
-        activeProposalId = 0;
         emit ChildSaleExpired(proposalId);
     }
 
@@ -494,6 +519,8 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
             if (value == 0 || value > fromBefore - lockedShares[from]) revert InsufficientUnlockedShares();
             _settleBnb(from, fromBefore);
             if (to != from) _settleBnb(to, toBefore);
+            // The ledger moves only outstanding BEM; the returned moved amount is diagnostic.
+            // slither-disable-next-line unused-return
             rewards.move(from, to, fromBefore, toBefore, value);
         } else if (from == address(0)) {
             if (state != IPoolVault.State.Funding) revert WrongState();

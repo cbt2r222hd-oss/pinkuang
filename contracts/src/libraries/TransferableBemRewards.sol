@@ -27,7 +27,7 @@ library TransferableBemRewards {
         s.remainder = available % TOTAL_SHARES;
         s.accPerShare += perShare;
         s.totalReceived += received;
-        distributed = perShare * TOTAL_SHARES;
+        distributed = available - s.remainder;
     }
 
     function claimable(Ledger storage s, address holder, uint256 balance) internal view returns (uint256) {
