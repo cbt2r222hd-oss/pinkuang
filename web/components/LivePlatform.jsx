@@ -1,4 +1,5 @@
 "use client";
+import { readPageRound } from '../lib/live-page.mjs';
 import { useEffect, useRef, useState } from "react";
 import { ZeroAddress, getAddress } from "ethers";
 import {
@@ -242,7 +243,20 @@ export default function LivePlatform() {
     boot.status === "ready"
       ? { ...boot, ...boot.manifest, journalBase: boot.journalBase || "/api/journal" }
       : null;
-  const isOperator = operator?.isOperator === true && same(operator.account, account);
+  const walletRevision = walletEpoch.current;
+  // A permission result belongs to this exact provider, account and read revision.
+  // Reject it during render, before the effect cleanup, when any identity changes.
+  const operatorContextCurrent = !!wallet && !!account && !!config
+    && connectedWallet.current === wallet && operator?.provider === wallet
+    && operator.walletRevision === walletRevision && operator.refresh === refresh
+    && operator.deployment === boot && same(operator.account, account)
+    && same(operator.factory, config.factory);
+  const isOperator = operatorContextCurrent && operator.status === 'verified'
+    && operator.configured === true && operator.isOperator === true && same(operator.operator, account)
+    && !connectingId && !connectionLock.current;
+  const operatorAccess = !wallet || !account ? 'disconnected' : !config ? 'unavailable'
+    : isOperator ? 'verified' : !operatorContextCurrent || operator.status === 'checking' || connectingId ? 'checking'
+      : operator.status === 'error' ? 'unavailable' : 'denied';
 
   useEffect(() => {
     const service = createWalletDiscovery(window, setWallets);
@@ -254,12 +268,17 @@ export default function LivePlatform() {
   useEffect(() => {
     let active = true;
     setOperator(null);
-    if (wallet && account && config)
+    if (wallet && account && config) {
+      const binding = { provider: wallet, account, factory: config.factory,
+        walletRevision, refresh, deployment: boot };
+      const current = () => active && connectedWallet.current === wallet && walletEpoch.current === walletRevision;
+      setOperator({ ...binding, status: 'checking' });
       readOperatorStatus({ provider: wallet, config, account }).then(result => {
-        if (active) setOperator(result);
-      }).catch(() => { if (active) setOperator(null); });
+        if (current()) setOperator({ ...binding, ...result, status: 'verified' });
+      }).catch(() => { if (current()) setOperator({ ...binding, status: 'error' }); });
+    }
     return () => { active = false; };
-  }, [wallet, account, config?.factory, refresh]);
+  }, [wallet, account, boot, refresh, walletRevision]);
 
   useEffect(() => {
     try {
@@ -315,6 +334,7 @@ export default function LivePlatform() {
       if (connectedWallet.current !== wallet) return;
       epoch.current++;
       walletEpoch.current++;
+      setOperator(null);
       setAccount(null);
       setWallet(null);
       setWalletInfo(null);
@@ -437,41 +457,7 @@ export default function LivePlatform() {
       setActivityCursor(null);
     };
     async function load() {
-      const catalog = await client.readPools({
-        account: account || ZeroAddress,
-      });
-      if (!current()) return READ_CANCELLED;
-      const tasks = {};
-      if (route.route === "home")
-        tasks.stats = () => client.readStats({ source: catalog.source });
-      if (
-        account &&
-        ["overview", "rewards", "market", "governance"].includes(route.route)
-      )
-        tasks.positions = () => client.readPositions({ account, source: catalog.source });
-      if (route.route === "detail" && route.pool) {
-        tasks.detail = () => client.readPool({
-          pool: route.pool,
-          account: account || ZeroAddress,
-          source: catalog.source,
-        });
-        tasks.governance = () => client.readGovernance({
-          pool: route.pool, account: account || ZeroAddress, source: catalog.source,
-        });
-        tasks.activity = () => client.readActivity({ pool: route.pool, source: catalog.source });
-      }
-      if (route.route === "market" && (marketTab !== "mine" || account))
-        tasks.orders = () => client.readOrders({
-          source: catalog.source,
-          ...(marketTab === "mine" ? { seller: account } : { active: true }),
-        });
-      if (["records", "overview", "rewards"].includes(route.route))
-        tasks.activity = () => client.readActivity({
-          account: route.route === "records" ? undefined : account || undefined,
-          source: catalog.source,
-        });
-      // This is the only concurrent read boundary: no partial results reach React.
-      return { catalog, ...await settleReadRound(tasks) };
+      return readPageRound(client, { route, account, marketTab });
     }
     retryReadRound(load, { isCurrent: current, onAttempt: clearRound })
       .then((result) => {
@@ -548,6 +534,7 @@ export default function LivePlatform() {
     const target = activeModal.current, ticket = { target }, context = walletEpoch.current;
     connectionLock.current = ticket;
     setConnectingId(entry.id);
+    setOperator(null);
     setConnectionError("");
     setBusy(true);
     const current = () => connectionLock.current === ticket && activeModal.current === target
@@ -577,6 +564,7 @@ export default function LivePlatform() {
         connectionLock.current = null;
         setConnectingId(null);
         setBusy(false);
+        if (wallet && account) setRefresh(value => value + 1);
       }
     }
   }
@@ -1074,11 +1062,12 @@ export default function LivePlatform() {
       {rows.length === 0 && (
         <Empty
           title={
-            loading
+            loading || boot.status === 'loading'
               ? L("正在核对合约和链上项目，请稍候…", "Checking contracts and on-chain pools…")
               : !source ? L("项目数据暂不可用", "Project data is unavailable")
                 : !holdings && pools.length === 0 ? L("尚未创建拼矿项目", "No pools have been created yet")
-                  : L("暂无匹配项目", "No matching pools")
+                  : holdings ? L("暂无持仓和待领取权益", "No positions or outstanding entitlements")
+                    : L("暂无匹配项目", "No matching pools")
           }
         >
           {!loading && source && !holdings && pools.length === 0 && <>
@@ -1204,7 +1193,7 @@ export default function LivePlatform() {
             {L("平台规则", "Platform rules")}
             <ArrowUpRight size={14} />
           </button>
-          {deploymentConsoleUrl && (
+          {isOperator && deploymentConsoleUrl && (
             <a
               className="rules-link deployment-console-link"
               href={deploymentConsoleUrl}
@@ -2316,12 +2305,27 @@ export default function LivePlatform() {
               )}
             </>
           )}
-          {route.route === 'operator' && <>
+          {route.route === 'operator' && (isOperator ? <>
             {heading(L('运营工作台', 'Pool operations'), L('创建矿池、购机与管理矿机。', 'Create pools, purchase and manage miners.'))}
-            <LiveOperator key={`${config?.factory}:${account}`} config={config} wallet={wallet} account={account}
-              operator={isOperator ? operator : null} disabled={loading || busy || !!pending} onSend={sendAdminAction}
+            <LiveOperator key={`${config?.factory}:${account}:${walletRevision}:${refresh}`} config={config} wallet={wallet} account={account}
+              operator={operator} disabled={loading || busy || !!pending} onSend={sendAdminAction}
               onRefresh={() => setRefresh(value => value + 1)}/>
-          </>}
+          </> : <section className="panel" data-operator-access={operatorAccess}>
+            <Empty title={operatorAccess === 'checking'
+              ? L('正在核对访问权限', 'Checking access')
+              : L('此页面仅限授权运营人员', 'Restricted access')}>
+              {operatorAccess === 'checking'
+                ? L('请稍候，核验完成后会显示可用页面。', 'Please wait while access is verified.')
+                : operatorAccess === 'unavailable'
+                  ? L('暂时无法验证访问权限，请稍后重试。', 'Access could not be verified. Please try again later.')
+                  : L('你可以返回首页查看并参与公开项目。', 'Return to the home page to view and join public pools.')}
+            </Empty>
+            <div className="live-actions">
+              <Button secondary onClick={() => go('home')}>{L('返回拼矿首页', 'Back to home')}</Button>
+              {wallet && account && operatorAccess !== 'checking' && <Button secondary disabled={busy}
+                onClick={() => setRefresh(value => value + 1)}>{L('重新核对权限', 'Check access again')}</Button>}
+            </div>
+          </section>)}
           {route.route === "records" && (
             <>
               {heading(
@@ -2436,6 +2440,7 @@ export default function LivePlatform() {
                     onClick={() => {
                       epoch.current++;
                       walletEpoch.current++;
+                      setOperator(null);
                       setAccount(null);
                       setWallet(null);
                       setWalletInfo(null);

@@ -14,7 +14,7 @@ try {
   await page.getByText('钱包已连接。发送交易前会请你确认。', { exact: true }).waitFor();
   assert.equal(await page.locator('nav').getByRole('button', { name: '运营工作台' }).count(), 0);
   await page.evaluate(() => { location.hash = 'operator'; });
-  await page.getByText('当前钱包不是 Factory 登记的运营地址。', { exact: true }).waitFor();
+  await page.getByText('此页面仅限授权运营人员', { exact: true }).waitFor();
   assert.equal(ordinary.controls.sentTransactions.length, 0); checks.push('non-operator cannot access creation even with a direct route');
   await page.close();
 
@@ -34,7 +34,7 @@ try {
   const params = abi.PoolFactory.parseTransaction(previews[0].params[0]).args[0];
   assert.equal(params.targetRaise, 1100000000000000n); assert.equal(params.priceCap, 1000000000000000n);
   await owner.evaluate(() => window.ethereum.__emit('accountsChanged', ['0x0000000000000000000000000000000000000009']));
-  await owner.getByText('当前钱包不是 Factory 登记的运营地址。', { exact: true }).waitFor();
+  await owner.getByText('此页面仅限授权运营人员', { exact: true }).waitFor();
   assert.equal(await owner.getByRole('dialog', { name: '确认运营操作' }).count(), 0);
   checks.push('operator creation shows exact zero-value unsigned preview; wallet switch invalidates it');
   await owner.close();
