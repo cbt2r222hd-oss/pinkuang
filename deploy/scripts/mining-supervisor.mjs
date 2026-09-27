@@ -8,10 +8,15 @@ import { runMiningCycle } from './mining-keeper.mjs';
 const factoryAbi = ['function poolCount() view returns(uint256)', 'function allPools(uint256) view returns(address)'];
 const json = value => JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item);
 const unresolved = journal => journal.transaction && !['confirmed', 'reverted', 'cancelled', 'cancel-reverted'].includes(journal.transaction.phase);
-const followup = journal => journal.miningStage === 'arming' && journal.transaction?.phase === 'confirmed';
+const followup = journal => ['arming', 'starting'].includes(journal.miningStage)
+  && journal.transaction?.phase === 'confirmed';
+const failed = journal => ['reverted', 'cancelled', 'cancel-reverted'].includes(journal.transaction?.phase);
 
 export function prioritizePools(pools, journalFor, cursor, batch = 10) {
-  const urgent = pools.filter(pool => unresolved(journalFor(pool)) || followup(journalFor(pool)));
+  const urgent = pools.filter(pool => {
+    const journal = journalFor(pool);
+    return unresolved(journal) || followup(journal) || failed(journal);
+  });
   if (urgent.length > 1) throw new Error('Multiple mining journals need the same operator wallet; resolve them manually.');
   if (urgent.length) return { selected: urgent, nextCursor: cursor };
   if (!pools.length) return { selected: [], nextCursor: 0 };
@@ -77,7 +82,7 @@ export async function runSupervisorCycle(provider, options, signer, state) {
       }
       const result = await runMiningCycle(provider, { ...options, pool, journal }, signer);
       results.push({ pool, ...result });
-      if (options.send && (unresolved(journalFor(pool)) || followup(journalFor(pool))
+      if (options.send && (unresolved(journalFor(pool)) || followup(journalFor(pool)) || failed(journalFor(pool))
         || /review-required|unknown|nonce-or-chain-changed/.test(result.status))) break;
     } finally { releaseWallet?.(); releaseJournal(); }
   }

@@ -13,6 +13,10 @@ test('supervisor scans pools in bounded round-robin batches and prioritizes a pe
   journals = { c: { miningStage: 'arming', transaction: { phase: 'confirmed' } } };
   next = prioritizePools(pools, journalFor, 0, 2);
   assert.deepEqual(next.selected, ['c']);
+  journals = { d: { miningStage: 'starting', transaction: { phase: 'confirmed' } } };
+  assert.deepEqual(prioritizePools(pools, journalFor, 0, 2).selected, ['d']);
+  journals = { a: { miningStage: 'arming', transaction: { phase: 'reverted' } } };
+  assert.deepEqual(prioritizePools(pools, journalFor, 0, 2).selected, ['a']);
   journals.b = { miningStage: 'starting', transaction: { phase: 'broadcast' } };
   assert.throws(() => prioritizePools(pools, journalFor, 0, 2), /Multiple mining journals/);
 });
