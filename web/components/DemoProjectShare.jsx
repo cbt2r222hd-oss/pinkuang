@@ -1,8 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Copy, Link2, Send, Share2, X } from 'lucide-react';
 import { createDemoShare } from '../lib/demo-share.mjs';
+import { SHARE_MOTTO_COUNT } from '../lib/share-copy.mjs';
+import ShareArtwork from './ShareArtwork';
+import ShareCopyControls from './ShareCopyControls';
 import styles from './DemoProjectShare.module.css';
 
 const copy = {
@@ -11,10 +14,9 @@ const copy = {
     intro: '邀请朋友一起了解这台矿机，感受共同参与的乐趣。',
     sample: '本次为样例数据，未发生真实付款。',
     label: 'Telegram / X 分享文案', project: '项目链接', link: '复制链接', text: '复制文案',
-    native: '更多分享方式', close: '关闭分享', copied: '已复制',
+    close: '关闭分享', copied: '已复制',
     copyFailed: '未能复制，请长按文案或链接手动复制。',
-    opened: '请在打开的 Telegram 或 X 窗口中确认发送。', cancelled: '已取消分享。',
-    failed: '暂时无法分享，请复制文案或链接。',
+    opened: '请在打开的 Telegram 或 X 窗口中确认发送。',
     privacy: '分享文案不包含钱包地址、投入金额或交易记录。',
     unavailable: '暂时无法分享此演示项目',
   },
@@ -23,10 +25,9 @@ const copy = {
     intro: 'Invite friends to explore this miner and participate together.',
     sample: 'Sample data. No real payment was made.',
     label: 'Telegram / X share text', project: 'Project link', link: 'Copy link', text: 'Copy text',
-    native: 'More sharing options', close: 'Close sharing', copied: 'Copied',
+    close: 'Close sharing', copied: 'Copied',
     copyFailed: 'Copy failed. Long-press the text or link to copy it manually.',
-    opened: 'Confirm sending in the Telegram or X window.', cancelled: 'Sharing cancelled.',
-    failed: 'Sharing is unavailable. Copy the text or link instead.',
+    opened: 'Confirm sending in the Telegram or X window.',
     privacy: 'No wallet address, investment amount or transaction record is shared.',
     unavailable: 'This demo project is unavailable for sharing',
   },
@@ -34,13 +35,12 @@ const copy = {
 
 export default function DemoProjectShare({ project, locale = 'zh', simulationComplete = false, onDismiss }) {
   const labels = copy[locale === 'en' ? 'en' : 'zh'];
-  const model = createDemoShare({ project, locale });
+  const [mottoIndex, setMottoIndex] = useState(0);
+  const [channel, setChannel] = useState('telegram');
+  const model = createDemoShare({ project, locale, mottoIndex });
   const textRef = useRef(null);
   const linkRef = useRef(null);
   const [notice, setNotice] = useState('');
-  const [nativeAvailable, setNativeAvailable] = useState(false);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setNativeAvailable(typeof navigator.share === 'function'); }, []);
 
   async function copyValue(value, ref) {
     try {
@@ -54,13 +54,7 @@ export default function DemoProjectShare({ project, locale = 'zh', simulationCom
     }
   }
 
-  async function shareNative() {
-    if (!model || busy || typeof navigator.share !== 'function') return;
-    setBusy(true);
-    try { await navigator.share(model.native); setNotice(''); }
-    catch (error) { setNotice(error?.name === 'AbortError' ? labels.cancelled : labels.failed); }
-    finally { setBusy(false); }
-  }
+  const selectedText = model ? channel === 'x' ? model.xText : model.text : '';
 
   return <section className={styles.card}>
     <div className={styles.top}>
@@ -70,11 +64,13 @@ export default function DemoProjectShare({ project, locale = 'zh', simulationCom
     <h2 id="dialog-title" className={styles.heading}>{model ? simulationComplete ? labels.complete : labels.heading : labels.unavailable}</h2>
     {model && <>
       <p className={styles.intro}>{labels.intro}</p>
+      <ShareArtwork locale={locale} />
       <div className={styles.preview}>
         <div className={styles.brand}>拼矿 <span>BEMine</span></div>
         <strong className={styles.project}>{model.title}</strong>
         <label className={styles.label} htmlFor="demo-share-text">{labels.label}</label>
-        <textarea id="demo-share-text" ref={textRef} readOnly value={model.text} rows={4} />
+        <ShareCopyControls locale={locale} channel={channel} onChannelChange={setChannel} onNextMotto={() => { setMottoIndex(index => (index + 1) % SHARE_MOTTO_COUNT); setNotice(''); }} />
+        <textarea id="demo-share-text" ref={textRef} readOnly value={selectedText} rows={4} />
         <label className={styles.label} htmlFor="demo-share-link">{labels.project}</label>
         <input id="demo-share-link" ref={linkRef} readOnly value={model.url} />
       </div>
@@ -82,8 +78,7 @@ export default function DemoProjectShare({ project, locale = 'zh', simulationCom
         <a href={model.telegramUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" onClick={() => setNotice(labels.opened)}><Send size={17} aria-hidden="true" />Telegram</a>
         <a href={model.xUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" onClick={() => setNotice(labels.opened)}><span className={styles.xMark} aria-hidden="true">𝕏</span>X</a>
         <button type="button" onClick={() => copyValue(model.url, linkRef)}><Link2 size={17} aria-hidden="true" />{labels.link}</button>
-        <button type="button" onClick={() => copyValue(model.copyText, textRef)}><Copy size={17} aria-hidden="true" />{labels.text}</button>
-        {nativeAvailable && <button type="button" disabled={busy} className={styles.native} onClick={shareNative}><Share2 size={17} aria-hidden="true" />{labels.native}</button>}
+        <button type="button" onClick={() => copyValue(`${selectedText}\n${model.url}`, textRef)}><Copy size={17} aria-hidden="true" />{labels.text}</button>
       </div>
       <p className={styles.sample}>{labels.sample}</p>
       <p className={styles.privacy}>{labels.privacy}</p>

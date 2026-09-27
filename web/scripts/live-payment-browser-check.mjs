@@ -33,7 +33,7 @@ try{
     fixture.controls.confirm();await page.getByRole('button',{name:'核对最终结果',exact:true}).click();
    }
    await page.getByText('认购已确认',{exact:true}).waitFor();
-   const text=await page.getByLabel('分享文案',{exact:true}).inputValue();
+   const text=await page.getByLabel('Telegram 分享文案',{exact:true}).inputValue();
    assert(text.includes('33'));assert(!text.includes(fixture.account));assert(!text.includes('0.143'));
    assert.equal(fixture.controls.sentTransactions.length,1);assert.equal(fixture.controls.journalState().record,null);
    assert(fixture.controls.trace.indexOf('journal:ack')<fixture.controls.trace.indexOf('wallet:fake-send'));

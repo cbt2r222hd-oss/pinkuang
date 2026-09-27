@@ -52,11 +52,46 @@ test('share intents encode bilingual text and the project URL without parameter 
       const intent = new URL(share[key]);
       assert.equal(intent.origin, origin);
       assert.equal(intent.pathname, path);
-      assert.equal(intent.searchParams.get('text'), share.text);
+      assert.equal(intent.searchParams.get('text'), source === 'x' ? share.xText : share.text);
       assert.equal(intent.searchParams.get('url'), buildProjectShareUrl(DEFAULT_PUBLIC_SHARE_BASE, pool, source));
       assert.equal([...intent.searchParams].length, 2);
     }
     assert.ok(share.text.includes('TapeOut #16210'));
+  }
+});
+
+test('share slogans stay stable and rotate only through the selected safe variants', () => {
+  const expected = ['一份也是矿友，一起才有意思。', '把朋友叫上，把矿机拼上。', '一起拼矿，一起发光。'];
+  for (let mottoIndex = 0; mottoIndex < 3; mottoIndex++) {
+    assert.equal(model({ mottoIndex }).motto, expected[mottoIndex]);
+    assert.equal(model({ mottoIndex }).text, model({ mottoIndex }).text);
+    assert.notEqual(model({ mottoIndex, locale: 'en' }).motto, expected[mottoIndex]);
+  }
+  assert.equal(model({ mottoIndex: 3 }).motto, expected[0]);
+  assert.equal(model({ mottoIndex: -1 }).motto, expected[0]);
+  assert.doesNotMatch(model().text, /共持 BEM|共享 BEM/u);
+  for (const state of ['Funded', 'Active', 'Listed', 'Closed', 'Refunding', 'Unknown']) {
+    for (let mottoIndex = 0; mottoIndex < 3; mottoIndex++) {
+      const share = model({ mottoIndex, project: { ...project, state } });
+      assert.ok(!expected.includes(share.motto));
+      assert.doesNotMatch(share.xText, /剩余|份额可认购|available/u);
+    }
+  }
+  for (const remainingShares of [0, null, undefined]) assert.ok(!expected.includes(model({ project: { ...project, remainingShares } }).motto));
+});
+
+test('X copy remains within weighted 280-character limit including its shortened URL', () => {
+  // https://docs.x.com/fundamentals/counting-characters (checked 2026-09-27).
+  // X default weights: Latin/general punctuation in these ranges count once; CJK counts twice.
+  const weighted = text => [...text].reduce((sum, char) => {
+    const cp = char.codePointAt(0);
+    return sum + (cp <= 0x10ff || cp >= 0x2000 && cp <= 0x200d || cp >= 0x2010 && cp <= 0x201f || cp >= 0x2032 && cp <= 0x2037 ? 1 : 2);
+  }, 0);
+  for (const locale of ['zh', 'en']) for (const name of ['TapeOut', 'Behemoth']) {
+    for (const state of ['Funding', 'Active', 'Unknown']) for (let mottoIndex = 0; mottoIndex < 3; mottoIndex++) {
+      const share = model({ locale, mottoIndex, project: { ...project, name, state, circuitId: (2n ** 256n - 1n).toString() } });
+      assert.ok(weighted(share.xText) + 1 + 23 <= 280, `${locale}/${name}/${state}/${mottoIndex}`);
+    }
   }
 });
 

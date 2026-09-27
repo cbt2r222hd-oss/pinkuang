@@ -19,7 +19,10 @@ const json = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.
 
 /** Exported separately so a Node smoke check can run the same RPC/index through the real adapter. */
 export function createLiveBrowserFixture({ account = FIXTURE_ACCOUNT, timestamp = Math.floor(Date.now() / 1000),
-  incomplete = false, sourceOverrides = {}, manifestOverrides = {}, confirmDeposit = false, pendingDeposit = false } = {}) {
+  incomplete = false, sourceOverrides = {}, manifestOverrides = {}, confirmDeposit = false, pendingDeposit = false,
+  fundingShares = 20n } = {}) {
+  fundingShares = BigInt(fundingShares);
+  if (fundingShares < 0n || fundingShares > 65n) throw new Error('Invalid fixture funding shares');
   account = getAddress(account);
   let head = BLOCK, nonce = 7, revision = 0, record = null, sent = null, readyToConfirm = !pendingDeposit;
   const sentTransactions = [], trace = [], results = new Map(), historicRows = new Map();
@@ -28,7 +31,7 @@ export function createLiveBrowserFixture({ account = FIXTURE_ACCOUNT, timestamp 
   const rows = Object.entries(FIXTURE_POOLS).map(([kind, pool], i) => {
     const funding = kind === 'funding', listed = kind === 'listed';
     const targetRaise = parseEther(['7.15', '8.8', '6.05', '11'][i]);
-    const shares = [20n, 35n, 12n, 30n][i], lockedShares = kind === 'active' ? 5n : 0n;
+    const shares = [fundingShares, 35n, 12n, 30n][i], lockedShares = kind === 'active' ? 5n : 0n;
     return { pool, status: { validMask: (1n << 17n) - 1n, errorMask: 0n, trustError: 0n },
       params: { circuits: i % 2 ? BEHEMOTH : TAPEOUT, circuitId: [16210n, 8204n, 15832n, 9052n][i],
         targetRaise, priceCap: targetRaise * 10n / 11n, directSeller: ZeroAddress, directPrice: 0n,
@@ -55,7 +58,7 @@ export function createLiveBrowserFixture({ account = FIXTURE_ACCOUNT, timestamp 
   const events = rows.flatMap((row, i) => [{ blockNumber: 100 - i, blockHash: blockHash(100 - i), timestamp: timestamp - i * 3,
     transactionHash: blockHash(1000 + i), transactionIndex: 1, logIndex: 1, contract: row.pool, pool: row.pool, source: 'pool',
     event: i ? 'BemClaimed' : 'Deposited', fields: i ? { user: account.toLowerCase(), amount: String(10000000 * (i + 1)) }
-      : { user: account.toLowerCase(), shares: '20', amount: row.initialContributedWei.toString(), totalRaised: row.totalRaised.toString() } }]);
+      : { user: account.toLowerCase(), shares: fundingShares.toString(), amount: row.initialContributedWei.toString(), totalRaised: row.totalRaised.toString() } }]);
   const rowsAt = block => historicRows.get(block) ?? rows;
   const rowFor = (pool, block = head) => { const row = rowsAt(block).find(r => match(r.pool, pool)); if (!row) throw new Error(`Unknown fixture pool ${pool}`); return row; };
   function position(row, owner) {

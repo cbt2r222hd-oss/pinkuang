@@ -26,11 +26,11 @@ try{
   await open(route);assert.equal(await page.locator('main h1').count(),1,route);checks.push(`desktop ${route}`);
  }
  await open(`detail/${FIXTURE_POOLS.funding}`);
- await page.getByRole('button',{name:'邀请朋友一起拼矿',exact:true}).click();
+ await page.locator('.purchase-panel').getByRole('button',{name:'邀请朋友一起拼矿',exact:true}).click();
  await page.getByRole('link',{name:'Telegram',exact:true}).waitFor();
  const telegram=new URL(await page.getByRole('link',{name:'Telegram',exact:true}).getAttribute('href'));
  assert.equal(telegram.hostname,'t.me');assert(telegram.searchParams.get('url').endsWith(`#detail/${FIXTURE_POOLS.funding}`));
- assert(!await page.getByLabel('分享文案',{exact:true}).inputValue().then(text=>text.includes('已确认')));
+ assert(!await page.getByLabel('Telegram 分享文案',{exact:true}).inputValue().then(text=>text.includes('已确认')));
  await page.screenshot({animations:'disabled',path:join(output,'desktop-invite.png')});checks.push('neutral share links point to the selected pool');
  await page.getByRole('button',{name:'收起分享',exact:true}).click();
  await open(`detail/${FIXTURE_POOLS.active}`);

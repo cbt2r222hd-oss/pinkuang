@@ -1,5 +1,5 @@
 .card{position:relative;min-width:0;background:var(--surface,#fffefa);color:var(--ink,#283e36);border:1px solid var(--border,#dedfd5);border-top:3px solid var(--brand-gold,#cab17b);border-radius:12px;padding:24px;font-family:inherit;text-align:left}
-.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.top{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;background:var(--surface,#fffefa)}
 .badge{display:inline-flex;align-items:center;gap:8px;color:var(--ink,#283e36);font-size:15px;font-weight:650}
 .badge svg{color:var(--green,#387762)}
 .dismiss{display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;padding:8px;color:var(--ink,#283e36);border-radius:7px}
@@ -15,7 +15,6 @@
 .actions a,.actions button{display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:46px;padding:10px 12px;background:var(--surface,#fffefa);color:var(--ink,#283e36);border:1px solid var(--border,#dedfd5);border-radius:7px;text-decoration:none;font-family:inherit;font-weight:600;font-size:15px;line-height:1.4;overflow-wrap:anywhere;text-align:center;cursor:pointer}
 .actions a:hover,.actions button:hover:not(:disabled){background:var(--soft,#eaece3);border-color:var(--brand-gold,#cab17b)}
 .actions a:first-child{background:var(--brand-gold,#cab17b);border-color:var(--brand-gold,#cab17b);color:#203a30}
-.actions .native{grid-column:1/-1}
 .xMark{font:700 18px/1 sans-serif}
 .privacy{font-size:13px;line-height:1.6;margin:15px 0 0;color:var(--muted,#6b766e);font-weight:550}
 .notice{min-height:21px;font-size:13px;line-height:1.6;margin:6px 0 0;color:var(--ink,#283e36);font-weight:600}

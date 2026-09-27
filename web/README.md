@@ -1,6 +1,6 @@
 # 拼矿 BEMine · 产品前端
 
-当前代码以最新合约、部署台与索引服务为基础完成产品页面接线。主网合约尚未部署；线上交互预览：https://tapeout.cc.cd/bemine/preview.html#home，分享预览：https://tapeout.cc.cd/bemine/preview.html#share/16928。正式入口无清单时显示即将开放。完整接线与环境要求见[产品对接说明](../docs/product-integration-and-sharing.md)，临时发布与手机检查见[2026-09-27 发布记录](../docs/preview-deployment-20260927.md)。
+当前代码以最新合约、部署台与索引服务为基础完成产品页面接线。主网合约尚未部署；线上交互预览：https://tapeout.cc.cd/bemine/preview.html#home，分享预览：https://tapeout.cc.cd/bemine/preview.html#share/16928。正式入口无清单时显示即将开放。完整接线与环境要求见[产品对接说明](../docs/product-integration-and-sharing.md)，最新海报、分享入口与发布验收见[v10 改版记录](../docs/share-update-v10-20260927.md)，此前发布与手机检查见[2026-09-27 发布记录](../docs/preview-deployment-20260927.md)。
 
 中文品牌「拼矿」，英文「BEMine」。墨绿香槟金主色，支持中文/英文、日常/深色外观，以及手机响应式布局。首页、资产总览、参与拼矿、矿机详情、矿机转让、收益中心、共同决策和公开记录均可交互预览。首页芯片及金币为独立前景动效，背景静止，提供暂停与减少动态效果支持。
 

@@ -328,6 +328,17 @@ export default function LivePlatform() {
   };
   const openAction = (kind, pool, extra = {}) => {
     setError("");
+    if (
+      kind === "list" &&
+      (pool?.status !== "Active" ||
+        pool.shareTradingAllowed !== true ||
+        !pool.availableShares)
+    ) {
+      setError(
+        L("这台矿机暂不支持份额转让", "Shares in this miner cannot be transferred at this stage"),
+      );
+      return;
+    }
     setPrepared(null);
     setQuantity("1");
     setPrice("");
@@ -1702,6 +1713,15 @@ export default function LivePlatform() {
                               `${amount(detail.purchaseCost)} BNB`,
                             ],
                             [
+                              ["Funding", "Funded"].includes(detail.status)
+                                ? L("当前认购人数", "Current subscribers")
+                                : L("当前份额持有人数", "Current share holders"),
+                              L(
+                                `${detail.members ?? "—"}人`,
+                                `${detail.members ?? "—"} ${["Funding", "Funded"].includes(detail.status) ? "subscribers" : "holders"}`,
+                              ),
+                            ],
+                            [
                               L("募集截止", "Funding deadline"),
                               date(detail.params?.fundingDeadline),
                             ],
@@ -1730,6 +1750,19 @@ export default function LivePlatform() {
                           )}
                         </p>
                         <div className="live-actions">
+                          {account &&
+                            detail.status === "Funding" &&
+                            detail.shares >= 1n && (
+                              <Button
+                                secondary
+                                onClick={() =>
+                                  setModal({ type: "share", pool: detail })
+                                }
+                              >
+                                <Share2 size={17} />
+                                {L("邀请朋友一起拼矿", "Invite friends to mine together")}
+                              </Button>
+                            )}
                           {["Funding", "Funded"].includes(detail.status) && (
                             <Button
                               secondary
@@ -1775,7 +1808,11 @@ export default function LivePlatform() {
                     {detailTab === "vote" && renderGovernance()}
                     {detailTab === "members" && (
                       <section className="panel live-details">
-                        <h2>{L("当前持有人", "Current holders")}</h2>
+                        <h2>
+                          {["Funding", "Funded"].includes(detail.status)
+                            ? L("当前认购人数", "Current subscribers")
+                            : L("当前持有人", "Current holders")}
+                        </h2>
                         {members.length ? (
                           members.map((address) => (
                             <a
@@ -1814,10 +1851,16 @@ export default function LivePlatform() {
                       {amount(detail.unitPriceWei)}{" "}
                       <small>BNB / {L("份", "share")}</small>
                     </div>
-                    <p className="transaction-note">
+                    <p className="order-rule purchase-explanation">
                       {L(
                         "每份对应本池 1% 的份额。",
                         "Each share represents 1% of this pool.",
+                      )}
+                    </p>
+                    <p className="order-rule purchase-explanation">
+                      {L(
+                        "为确保购机成功，用户会按矿机出售价格额外预付 10%；购机成功后余款按照份额等比退还",
+                        "To help complete the miner purchase, subscribers prepay an extra 10% of its sale price. After a successful purchase, the remaining funds are refunded in proportion to their shares.",
                       )}
                     </p>
                     {detail.status === "Funding" ? (
@@ -1891,18 +1934,20 @@ export default function LivePlatform() {
                         {L("领取", "Claim")}{" "}
                         {amount(account ? detail.bnbOwed : null)} BNB
                       </Button>
-                      <Button
-                        secondary
-                        disabled={
-                          !account ||
-                          busy ||
-                          detail.shareTradingAllowed !== true ||
-                          !detail.availableShares
-                        }
-                        onClick={() => openAction("list", detail)}
-                      >
-                        {L("出售我的份额", "Sell my shares")}
-                      </Button>
+                      {detail.status === "Active" && (
+                        <Button
+                          secondary
+                          disabled={
+                            !account ||
+                            busy ||
+                            detail.shareTradingAllowed !== true ||
+                            !detail.availableShares
+                          }
+                          onClick={() => openAction("list", detail)}
+                        >
+                          {L("出售我的份额", "Sell my shares")}
+                        </Button>
+                      )}
                       <Button
                         secondary
                         onClick={() =>
@@ -2186,7 +2231,7 @@ export default function LivePlatform() {
                   </div>
                 </div>
                 {account ? (
-                  poolTable(positions, true)
+                  poolTable(positions.filter((p) => p.status === "Active"), true)
                 ) : (
                   <Empty
                     title={L(

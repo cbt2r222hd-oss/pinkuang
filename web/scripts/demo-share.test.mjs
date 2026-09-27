@@ -20,12 +20,30 @@ test('both language share payloads carry clear demo notice and safe X length', (
     assert.equal(model.remaining, 27);
     assert.match(model.text, locale === 'zh' ? /演示预览.*\n.*\n.*未发生真实交易/u : /\[Demo\].*\n.*\n.*No real transaction/u);
     // Conservative bound: count every text code point as two, plus newline and X's shortened URL.
-    assert.ok([...model.text].length * 2 + 24 <= 280, `${locale} copy fits X with URL`);
+    assert.ok([...model.xText].length * 2 + 24 <= 280, `${locale} copy fits X with URL`);
     assert.equal(new URL(model.telegramUrl).searchParams.get('text'), model.text);
-    assert.equal(new URL(model.xUrl).searchParams.get('text'), model.text);
+    assert.equal(new URL(model.xUrl).searchParams.get('text'), model.xText);
     assert.equal(new URL(model.xUrl).origin, 'https://x.com');
     assert.equal(new URL(model.telegramUrl).origin, 'https://t.me');
     assert.equal(new URL(new URL(model.xUrl).searchParams.get('url')).pathname, '/bemine/preview.html');
+  }
+});
+
+test('demo slogans rotate without claiming availability for full or inactive projects', () => {
+  for (const locale of ['zh', 'en']) {
+    const mottos = Array.from({ length: 3 }, (_, mottoIndex) => createDemoShare({ project, locale, mottoIndex }).motto);
+    assert.equal(new Set(mottos).size, 3);
+    for (let mottoIndex = 0; mottoIndex < 3; mottoIndex++) {
+      const model = createDemoShare({ project, locale, mottoIndex });
+      assert.doesNotMatch(model.text, /共持 BEM|共享 BEM|Co-own BEM/u);
+      assert.match(model.xText, locale === 'zh' ? /演示.*\n.*\n.*未发生真实交易/u : /\[Demo\].*\n.*\n.*No real transaction/u);
+      assert.ok([...model.xText].length * 2 + 24 <= 280);
+      for (const override of [{ funded: 100 }, { funded: undefined }, { status: 'Active' }, { status: 'Listed' }]) {
+        const inactive = createDemoShare({ project: { ...project, ...override }, locale, mottoIndex });
+        assert.equal(inactive.canSubscribe, false);
+        assert.ok(!mottos.includes(inactive.motto));
+      }
+    }
   }
 });
 

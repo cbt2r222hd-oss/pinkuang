@@ -2,6 +2,7 @@
 // Official references checked 2026-09-27:
 // https://core.telegram.org/widgets/share
 // https://docs.x.com/x-for-websites/post-button/overview
+import { shareMotto } from './share-copy.mjs';
 export const DEFAULT_PUBLIC_SHARE_BASE = 'https://tapeout.cc.cd/bemine/';
 const PUBLIC_ORIGINS = new Set(['https://tapeout.cc.cd']);
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
@@ -77,7 +78,7 @@ function projectStatus(project, english) {
   return labels[project.state]?.[english ? 1 : 0] ?? (english ? 'View the latest project status.' : '查看项目最新状态。');
 }
 
-export function createProjectShare({ publicBaseUrl, project, confirmation, locale = 'zh' } = {}) {
+export function createProjectShare({ publicBaseUrl, project, confirmation, locale = 'zh', mottoIndex = 0 } = {}) {
   if (!project || !COLLECTION_NAMES.has(project.name)) return null;
   const id = identifier(project.circuitId);
   const url = buildProjectShareUrl(publicBaseUrl, project.poolAddress);
@@ -89,21 +90,25 @@ export function createProjectShare({ publicBaseUrl, project, confirmation, local
   const opening = confirmed
     ? (english ? `I've joined ${title} on BEMine.` : `我已参与拼矿 BEMine 的 ${title}。`)
     : (english ? `Explore ${title} on BEMine.` : `一起了解拼矿 BEMine 的 ${title}。`);
-  const motto = english ? 'Co-own BEM miners. Share the BEM journey.' : '共持 BEM 矿机，共享 BEM 人生。';
+  const canSubscribe = project.state === 'Funding' && Number.isInteger(project.remainingShares)
+    && project.remainingShares > 0 && project.remainingShares <= 100;
+  const motto = shareMotto(locale, mottoIndex, canSubscribe);
   const text = `${opening}\n${motto}\n${status}`;
-  const intent = (endpoint, source) => {
+  // X counts CJK characters more heavily. Keep its composer concise, even for a uint256 circuit ID.
+  const xStatus = canSubscribe
+    ? (english ? `${project.remainingShares}/100 shares available. Check the latest status.` : `剩余 ${project.remainingShares}/100 份，以最新进度为准。`)
+    : (english ? 'View the latest project status.' : '查看项目最新进展。');
+  const xText = `BEMine · ${title}\n${motto}\n${xStatus}`;
+  const intent = (endpoint, source, intentText = text) => {
     const target = new URL(endpoint);
     target.searchParams.set('url', buildProjectShareUrl(publicBaseUrl, project.poolAddress, source));
-    target.searchParams.set('text', text);
+    target.searchParams.set('text', intentText);
     return target.href;
   };
   return {
-    title, text, url, copyText: `${text}\n${url}`, confirmed, status,
-    canSubscribe: project.state === 'Funding' && Number.isInteger(project.remainingShares)
-      && project.remainingShares > 0 && project.remainingShares <= 100,
+    title, text, xText, motto, url, copyText: `${text}\n${url}`, confirmed, status, canSubscribe,
     stateKnown: STATES.has(project.state),
     telegramUrl: intent('https://t.me/share/url', 'tg'),
-    xUrl: intent('https://x.com/intent/tweet', 'x'),
-    native: { title: `BEMine · ${title}`, text, url: buildProjectShareUrl(publicBaseUrl, project.poolAddress, 'native') },
+    xUrl: intent('https://x.com/intent/tweet', 'x', xText),
   };
 }

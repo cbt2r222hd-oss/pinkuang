@@ -648,6 +648,32 @@
   color: var(--muted);
   margin-top: 5px;
 }
+
+.app-shell .purchase-panel .purchase-explanation {
+  margin: 10px 0 0;
+  text-align: left;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.app-shell .miner-invite {
+  margin: 18px 25px 0;
+}
+.app-shell .funding-invite {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.app-shell .funding-invite .btn {
+  width: 100%;
+  justify-content: center;
+  white-space: normal;
+}
+.app-shell .member-row .text-button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
 .live-yield .chart-summary {
   display: flex;
   justify-content: space-between;
