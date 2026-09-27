@@ -44,10 +44,10 @@ function provider(options = {}) {
     if (method === 'eth_getBlockByNumber') {
       const n = args[0] === 'latest' ? 10n : BigInt(args[0]);
       return { number: toQuantity(n), timestamp: toQuantity(n === 8n ? timestamp - 2 : timestamp),
-        hash: n === 8n ? deploymentHash : options.reorg ? deploymentHash : blockHash };
+        hash: n === 8n ? (options.deploymentReorg ? blockHash : deploymentHash) : options.reorg ? deploymentHash : blockHash };
     }
     if (method === 'eth_getCode') return options.badCode ? '0x6001' : code;
-    assert.equal(method, 'eth_call'); assert.equal(args[1], '0xa');
+    assert.equal(method, 'eth_call'); assert.equal(args[1], toQuantity(options.blockNumber ?? 10n));
     const { to, data } = args[0];
     let iface = to === factory ? abi.PoolFactory : to === lens ? abi.PoolLens : to === shareMarket ? abi.ShareMarket : bindings;
     let parsed = iface.parseTransaction({ data });
@@ -58,7 +58,7 @@ function provider(options = {}) {
     else if (name === 'timelock' || name === 'owner') value = timelock;
     else if (name === 'shareMarket') value = shareMarket;
     else if (name === 'beacon') value = beacon;
-    else if (name === 'VERSION') value = 1n;
+    else if (name === 'VERSION') value = options.lensVersion ?? 1n;
     else if (name === 'poolCount') value = BigInt(options.totalPools ?? rows.length);
     else if (name === 'positions') value = { blockNumber: 10n, timestamp: BigInt(timestamp),
       totalPools: BigInt(options.totalPools ?? rows.length), nextCursor: 0n, registryCountValid: true,
@@ -131,7 +131,102 @@ test('deployment verifies all code hashes and bindings at a canonical pinned blo
   const verified = await c.verifyDeployment({ blockNumber: 10n });
   assert.equal(verified.blockNumber, 10n);
   assert.equal(rpc.calls.filter(c => c.method === 'eth_getCode').length, 5);
-  for (const options of [{ wrongChain: true }, { wrongBinding: true }, { badCode: true }]) await assert.rejects(client({}, options).verifyDeployment({ blockNumber: 10n }));
+  for (const [options, error] of [[{ wrongChain: true }, 'wrong_chain'], [{ wrongBinding: true }, 'deployment_binding'],
+    [{ badCode: true }, 'deployment_code'], [{ deploymentReorg: true }, 'deployment_reorg'], [{ lensVersion: 2n }, 'lens_version']]) {
+    await assert.rejects(client({}, options).verifyDeployment({ blockNumber: 10n }), { code: error });
+  }
+  await assert.rejects(c.verifyDeployment({ blockNumber: 8n }), { code: 'deployment_block' });
+});
+
+test('same-block deployment callers share bounded reads and cached success still checks the canonical block', async () => {
+  const base = provider(); let active = 0, peak = 0;
+  const rpc = { async request(request) {
+    if (!['eth_getCode', 'eth_call'].includes(request.method)) return base.request(request);
+    active++; peak = Math.max(peak, active);
+    try { await new Promise(resolve => setImmediate(resolve)); return await base.request(request); }
+    finally { active--; }
+  } };
+  const c = createLiveDataClient(config, { provider: rpc });
+  const results = await Promise.all(Array.from({ length: 3 }, () => c.verifyDeployment({ blockNumber: 10n })));
+  assert(results.every(result => result.blockHash === blockHash));
+  assert.equal(peak, 4); assert.equal(active, 0);
+  assert.equal(base.calls.filter(c => c.method === 'eth_getCode').length, 5);
+  assert.equal(base.calls.filter(c => c.method === 'eth_call').length, 9);
+  assert.equal(base.calls.filter(c => c.method === 'eth_getBlockByNumber' && c.params[0] === '0x8').length, 1);
+  const before = base.calls.length;
+  await c.verifyDeployment({ blockNumber: 10n });
+  assert.deepEqual(base.calls.slice(before).map(c => c.method), ['eth_chainId', 'eth_getBlockByNumber', 'eth_chainId', 'eth_getBlockByNumber']);
+});
+
+test('a shared failed deployment verification drains all started reads and is retried without a cached failure', async () => {
+  const base = provider(), failure = new Error('temporary code read failure');
+  let fail = true, active = 0, started = 0, settled = false, releaseReads, allStarted;
+  const release = new Promise(resolve => { releaseReads = resolve; });
+  const startedFour = new Promise(resolve => { allStarted = resolve; });
+  const rpc = { async request(request) {
+    if (!fail || request.method !== 'eth_getCode') return base.request(request);
+    started++; active++; if (started === 4) allStarted();
+    try {
+      if (request.params[0] === factory) throw failure;
+      await release; return await base.request(request);
+    } finally { active--; }
+  } };
+  const c = createLiveDataClient(config, { provider: rpc });
+  const waiting = Promise.allSettled([c.verifyDeployment({ blockNumber: 10n }), c.verifyDeployment({ blockNumber: 10n })]);
+  waiting.then(() => { settled = true; });
+  await startedFour; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(started, 4); assert.equal(active, 3); assert.equal(settled, false);
+  releaseReads();
+  const failed = await waiting;
+  assert(failed.every(result => result.status === 'rejected' && result.reason === failure));
+  assert.equal(active, 0); assert.equal(base.calls.filter(c => c.method === 'eth_call').length, 0);
+  fail = false;
+  const before = base.calls.length;
+  await c.verifyDeployment({ blockNumber: 10n });
+  assert.equal(base.calls.slice(before).filter(c => c.method === 'eth_getCode').length, 5);
+  assert.equal(base.calls.slice(before).filter(c => c.method === 'eth_call').length, 9);
+});
+
+test('deployment cache keys include the block hash and a final reorg check must pass before caching', async () => {
+  const base = provider(); let sourceHash = blockHash, targetHeaders = 0, changeAfterRead = true;
+  const changedHash = `0x${'d4'.repeat(32)}`;
+  const rpc = { async request(request) {
+    const result = await base.request(request);
+    if (request.method !== 'eth_getBlockByNumber' || request.params[0] === '0x8') return result;
+    targetHeaders++;
+    return { ...result, hash: changeAfterRead && targetHeaders % 2 === 0 ? changedHash : sourceHash };
+  } };
+  const c = createLiveDataClient(config, { provider: rpc });
+  await assert.rejects(c.verifyDeployment({ blockNumber: 10n }), { code: 'source_reorg' });
+  changeAfterRead = false;
+  let before = base.calls.length;
+  await c.verifyDeployment({ blockNumber: 10n });
+  assert.equal(base.calls.slice(before).filter(c => c.method === 'eth_getCode').length, 5);
+  sourceHash = changedHash; before = base.calls.length;
+  const changed = await c.verifyDeployment({ blockNumber: 10n });
+  assert.equal(changed.blockHash, changedHash);
+  assert.equal(base.calls.slice(before).filter(c => c.method === 'eth_getCode').length, 5);
+  // Even the old cached hash must fail if the block changes during that invocation.
+  sourceHash = blockHash; changeAfterRead = true; before = base.calls.length;
+  await assert.rejects(c.verifyDeployment({ blockNumber: 10n }), { code: 'source_reorg' });
+  assert.equal(base.calls.slice(before).filter(c => c.method === 'eth_getCode').length, 0);
+  changeAfterRead = false; before = base.calls.length;
+  await c.verifyDeployment({ blockNumber: 10n });
+  assert.equal(base.calls.slice(before).filter(c => c.method === 'eth_getCode').length, 5);
+});
+
+test('deployment success cache retains at most eight exact block identities', async () => {
+  const options = { blockNumber: 10n }, rpc = provider(options), c = createLiveDataClient(config, { provider: rpc });
+  for (let number = 10n; number <= 18n; number++) {
+    options.blockNumber = number; await c.verifyDeployment({ blockNumber: number });
+  }
+  assert.equal(rpc.calls.filter(c => c.method === 'eth_getCode').length, 45);
+  options.blockNumber = 11n; await c.verifyDeployment({ blockNumber: 11n });
+  assert.equal(rpc.calls.filter(c => c.method === 'eth_getCode').length, 45);
+  options.blockNumber = 10n; await c.verifyDeployment({ blockNumber: 10n });
+  assert.equal(rpc.calls.filter(c => c.method === 'eth_getCode').length, 50);
+  options.wrongChain = true;
+  await assert.rejects(c.verifyDeployment({ blockNumber: 10n }), { code: 'wrong_chain' });
 });
 
 test('pools combine index discovery and same-block Lens; exact amounts and unknown mining stay exact', async () => {

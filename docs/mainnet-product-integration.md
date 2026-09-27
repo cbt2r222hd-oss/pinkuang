@@ -15,6 +15,8 @@
 
 本次修改网页与后台接入，不改变 Solidity、既有合约地址或编译产物。发布候选通过隔离检查，不等于用户已完成主网资金流程。主网只读检查时工厂池数为 **0**；第一笔建池须由用户连接运营钱包并自行确认。
 
+产品服务于 **2026-09-27 07:56:13 UTC** 首次切换上线。随后 `07:58:20.684 UTC` 的生产只读验收确认索引已追平：`indexedThrough=observedSafeHead=124296799`、`complete=true`、`unknownReason=null`；部署记录仍为 13/13 完成，原站服务正常，本次发布未发送链上交易。后续前端读取修复的发布目录与浏览器验收另记于最终发布证据，不能用首次上线时间替代后续版本验收。
+
 ## 同源服务与配置
 
 | 公共路径 | 实际服务 | 用途 |
@@ -42,17 +44,21 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 | `BEMINE_READ_RPC_URL` | `https://bsc-dataseed.bnbchain.org`；未设时沿用 `DEPLOYMENT_JOURNAL_RPC_URL` |
 | `BEMINE_INDEX_URL` | `http://127.0.0.1:4180` |
 | `CHAIN_INDEX_RPC_URL` | `https://bsc-dataseed.bnbchain.org`；读取主网区块、合约代码与状态 |
-| `CHAIN_INDEX_LOGS_RPC_URL` | `https://rpc-bnb.blockmachine.io`；单独提供历史 `eth_getLogs` |
-| `CHAIN_INDEX_SCAN_RANGE` | `500`；限制日志查询批次的区块跨度，匹配本次 Blockmachine 实测及索引器单轮 500 块上限 |
+| `CHAIN_INDEX_LOGS_RPC_URL` | `https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3`；NodeReal 官方公开共享端点，单独提供历史 `eth_getLogs`，该公开 key 不是私人凭据 |
+| `CHAIN_INDEX_SCAN_RANGE` | `500`；限制日志查询批次的区块跨度，与生产配置及索引器单轮 500 块上限一致 |
 | `CHAIN_INDEX_DB` | 独立持久索引数据库 |
 | `CHAIN_INDEX_FACTORY` / `CHAIN_INDEX_MARKET` | 上述 Factory / ShareMarket |
 | `CHAIN_INDEX_START_BLOCK` | `124286242` |
 | `CHAIN_INDEX_CONFIRMATIONS` | `12` |
 | `CHAIN_INDEX_HOST` / `CHAIN_INDEX_PORT` | `127.0.0.1` / `4180` |
 
-本次索引器使用**双 RPC**：官方节点读取区块、代码和合约状态，Blockmachine 仅处理事件日志查询；每轮同步直接核对两个节点的 `eth_chainId=56`。官方节点不能据此当作历史日志服务使用。虽然代码允许省略 `CHAIN_INDEX_LOGS_RPC_URL` 并与主 RPC 共用地址，本次部署必须显式填写上述日志节点。
+本次索引器使用**双 RPC**：BNB Chain 官方节点读取区块、代码和合约状态，NodeReal 处理事件日志查询；每轮同步直接核对两个节点的 `eth_chainId=56`。主 RPC 不能据此当作历史日志服务使用。虽然代码允许省略 `CHAIN_INDEX_LOGS_RPC_URL` 并与主 RPC 共用地址，本次部署必须显式填写上述日志节点。
 
-日志节点已根据实际部署高度重新选择。BNB Chain 官方文档所列的 Blockmachine 节点，本次服务器实测可按实际嵌套 topics 条件查询 500 个历史区块，耗时 0.542 秒；初始化块的三条事件及交易身份与既有部署证据匹配。生产已采用 `https://rpc-bnb.blockmachine.io` 和 `CHAIN_INDEX_SCAN_RANGE=500`，与索引器既有的单轮 500 块上限一致，以减少日志请求次数；500 块配置回归测试通过。这些有限探测不代表服务商公布的全局上限或长期可用性保证。
+生产最终采用 [NodeReal 官方 API 入门文档](https://docs.nodereal.io/reference/getting-started-with-your-api)列出的公开共享端点和 `CHAIN_INDEX_SCAN_RANGE=500`。历史日志探测及初始化块的三条事件身份核验通过；切换后的 40 秒观察窗口内未记录同步错误，游标推进至 `124293791`，当时距安全链头尚差 `2583` 块。这证明该时段回填可推进，不能替代追平验收或长期可用性验证。500 块配置回归测试通过。
+
+NodeReal 官方说明公开端点按每个 IP 限制为 **2000 CU/分钟**；其 [CU 计费表](https://docs.nodereal.io/docs/compute-units-cus)列出 `eth_getLogs` 每次 **50 CU**。按当前无矿池、追平后每 10 秒一轮、每轮工厂和市场各一次日志查询估算，约 12 次日志查询/分钟，即约 **600 CU/分钟**，另有链 ID 校验等开销；这是对当前代码和空池状态的估算，矿池增加、历史回填、重试及同 IP 其他请求都会提高用量。代码保留失败退避和数据不可用状态。免费配额仍须在真实运行中观察，不能据此保证无条件长期稳定。
+
+Blockmachine 曾通过 500 块实际嵌套 topics 查询（0.542 秒）及初始化三事件核验，但已退出本次生产日志配置。其[公开 RPC 说明](https://blockmachine.io/public-rpc-endpoints)标明免 key 配额为每 IP 每分钟 60 RU，重日志调用消耗更多 RU，且免 key 端点不提供归档访问；一次历史探测成功不能作为持续归档保障。故本次未将它保留为生产日志源。
 
 其他已探测节点的限制保留为排查记录：BlockReq 本次只支持最近 8192 个区块，部署块 `124286242` 已超出该窗口；1RPC 本次能读取该历史部署块，但日志查询跨度限制为 50 个区块。二者不作为本次生产日志配置。
 
@@ -67,6 +73,10 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 可信记录从服务器已有完成日志导出，经只读核验后放入私有运维目录，再配置服务路径。文件须包含 13 个已确认步骤、初始化回执、完整地址与运行代码摘要、通过的检查及匹配当前产物的 artifactDigest。不能使用浏览器任意提交的记录代替，也不能只填一个工厂地址放行；运行账户须能读取该私有文件。公开清单与私有记录分开保存。
 
 每次产品签名前，服务端在固定区块检查编译运行代码、库链接、实现槽、工厂与市场关系、运营权限、时间锁角色，随后检查 nonce、Gas、余额及精确调用模拟。索引未追平、RPC 超时或上游报错应显示数据不可用，不得解释为没有资产。
+
+页面只读部署校验保留 chainId、部署区块、5 个运行代码摘要、8 项部署关系、Lens 版本及读取结束后的规范区块检查。独立代码与关系读取最多并发 4 个；同一 `区块编号:区块哈希` 的页面分支共享正在执行的完整校验，成功后最多缓存 8 个区块身份，缓存命中仍核对网络与规范区块。失败停止发起后续校验，等待已发请求全部结束，再清除失败状态；读取中重组不能写入成功缓存。
+
+页面遇到索引同步窗口 HTTP 502/503/504、索引未完成或过期、`source_changed` 时，等待本轮全部读取结束，间隔 1 秒从头重读整组页面数据，最多 3 轮，避免混合新旧快照。权限错误、合约身份或完整性错误不自动重试；同轮出现这类错误时优先报告。切换页面、矿池或钱包后，旧轮次不能更新当前界面。该重试仅用于只读页面，不包装钱包签名或交易操作。
 
 ## 交易记录规则
 
@@ -84,7 +94,7 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 |---|---|---|
 | Linux 后台基线回归 | 81/81（双 RPC 新增专项前） | 包含日志恢复、并发许可、可信图、代理及索引基础用例 |
 | 索引与启动服务专项复跑 | 16/16（原索引 10 + 双 RPC/退避/关闭 6） | 本机 mock RPC 验证分流、错误链、429、超时及幂等关闭；不与基线重叠累计 |
-| Linux 完整 web 回归 | 121/121（前端脚本 109 + 旧 live API 12） | 隔离 Linux、mock RPC 与临时数据库；涵盖当前前端与旧 API 回归 |
+| Linux 完整 web 最终回归 | 133/133（前端脚本 121 + 旧 live API 12） | 同一隔离 Linux QA 目录，mock RPC 与临时数据库；新增整轮读取重试、并发上限、校验共享、失败排空及重组回归 |
 | 本机 Anvil 资金回路 | 2/2 | 实际本机 EVM 执行：未满额撤回提现、募集超时退款提现 |
 | 主网只读图检查 | 通过，区块 `124292027` | 本次既有地址、代码、实现关系与运营绑定 |
 
@@ -113,7 +123,7 @@ NEXT_PUBLIC_BASE_PATH=/bemine pnpm exec next build
 
 脚本顶部为本机绝对路径，迁移机器须先修改源码、依赖与输出路径。它只启动 `127.0.0.1` 的临时 Anvil，使用解锁测试账户，无主网 RPC 或 fork；chainId 56 只用于测试网络守卫。外部矿机、挖矿与市场地址使用本机占位代码，因此 **不证明真实采购、NFT 交割、挖矿、收益或市场结算完成**，也不覆盖真实钱包弹窗。
 
-证据包括 `backend-tests-final.txt`、`web-linux-tests.txt`、`web-linux-result.json`、`web-linux-source-manifest.json`、`mainnet-graph-check.json`、`local-business-e2e-result.json`、`withdrawDeposit-revert-trace.json`、`本机业务回归与Gas诊断.md`。最终公开服务是否已切换到这一构建，以发布后的页面、清单及服务验收为准。
+证据包括 `backend-tests-final.txt`、`web-linux-tests.txt`、`web-linux-result.json`、`web-linux-source-manifest.json`、`mainnet-graph-check.json`、`activation-result.json`、`post-release-check.json`、`local-business-e2e-result.json`、`withdrawDeposit-revert-trace.json`、`本机业务回归与Gas诊断.md`。初版 121/121 的完整日志、结果和文件哈希另存 `web-linux-tests-initial.txt`、`web-linux-result-initial.json`、`web-linux-source-manifest-initial.json`；最终 133/133 使用冻结源码的 136 个文件，运行前后核对哈希，未改正式服务。最终公开服务是否已切换到这一构建，以发布后的页面、清单及服务验收为准。
 
 ## 用户首轮主网测试顺序
 

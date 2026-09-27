@@ -36,6 +36,7 @@ import LiveYieldChart from "./LiveYieldChart";
 import LiveGovernance from "./LiveGovernance";
 import LiveOperator from "./LiveOperator";
 import { sameUnsignedIntent } from "../lib/ui-context.mjs";
+import { READ_CANCELLED, retryReadRound, settleReadRound } from "../lib/read-retry.mjs";
 import { prepareAdminAction, readOperatorStatus } from "../lib/live-admin.mjs";
 import ProjectShare from "./ProjectShare";
 import { resolveDeployConsoleUrl } from "../lib/deploy-console-url.mjs";
@@ -345,6 +346,7 @@ export default function LivePlatform() {
     window.scrollTo({ top: 0, behavior: "instant" });
   };
   const openAction = (kind, pool, extra = {}) => {
+    if (loading || busy) return;
     setError("");
     if (
       kind === "list" &&
@@ -378,131 +380,98 @@ export default function LivePlatform() {
     let cancelled = false;
     const revision = ++epoch.current;
     const current = () => !cancelled && revision === epoch.current;
-    setLoadedRoute("");
-    setPositionsLoaded(false);
-    setPositions([]);
-    setMarketCredit(null);
-    setLoading(true);
-    setError("");
-    setDetail(null);
-    setGovernance(null);
-    setMembers([]);
-    setOrders([]);
-    setActivity([]);
-    setStats(null);
-    setSource(null);
-    setPoolCursor(null);
-    setPositionCursor(null);
-    setOrderCursor(null);
-    setActivityCursor(null);
+    const clearRound = () => {
+      setLoadedRoute("");
+      setPositionsLoaded(false);
+      setPools([]);
+      setPositions([]);
+      setMarketCredit(null);
+      setLoading(true);
+      setError("");
+      setDetail(null);
+      setGovernance(null);
+      setMembers([]);
+      setOrders([]);
+      setActivity([]);
+      setStats(null);
+      setSource(null);
+      setYieldData(null);
+      setPrepared(null);
+      setPoolCursor(null);
+      setPositionCursor(null);
+      setOrderCursor(null);
+      setActivityCursor(null);
+    };
     async function load() {
       const catalog = await client.readPools({
         account: account || ZeroAddress,
       });
-      if (cancelled || revision !== epoch.current) return;
-      setPools(catalog.items.map(viewPool));
-      setPoolCursor(catalog.nextCursor);
-      setSource(catalog.source);
-      const tasks = [];
+      if (!current()) return READ_CANCELLED;
+      const tasks = {};
       if (route.route === "home")
-        tasks.push(
-          client.readStats({ source: catalog.source }).then((result) => {
-            if (current()) setStats(result.data);
-          }),
-        );
+        tasks.stats = () => client.readStats({ source: catalog.source });
       if (
         account &&
         ["overview", "rewards", "market", "governance"].includes(route.route)
       )
-        tasks.push(
-          client
-            .readPositions({ account, source: catalog.source })
-            .then((result) => {
-              if (current()) {
-                setPositions(result.items.map(viewPool));
-                setPositionCursor(result.nextCursor);
-                setPositionsLoaded(true);
-                setMarketCredit(result.marketBnbOwed);
-              }
-            }),
-        );
-      else setPositions([]);
+        tasks.positions = () => client.readPositions({ account, source: catalog.source });
       if (route.route === "detail" && route.pool) {
-        const result = await client.readPool({
+        tasks.detail = () => client.readPool({
           pool: route.pool,
           account: account || ZeroAddress,
           source: catalog.source,
         });
-        if (cancelled || revision !== epoch.current) return;
-        setDetail(viewPool(result.item));
-        tasks.push(
-          client
-            .readGovernance({
-              pool: route.pool,
-              account: account || ZeroAddress,
-              source: catalog.source,
-            })
-            .then((result) => {
-              if (current()) setGovernance(result.data);
-            }),
-        );
-        tasks.push(
-          client
-            .readActivity({ pool: route.pool, source: catalog.source })
-            .then((result) => {
-              if (current()) {
-                setActivity(result.items);
-                setActivityCursor(result.nextCursor);
-              }
-            }),
-        );
+        tasks.governance = () => client.readGovernance({
+          pool: route.pool, account: account || ZeroAddress, source: catalog.source,
+        });
+        tasks.activity = () => client.readActivity({ pool: route.pool, source: catalog.source });
       }
       if (route.route === "market" && (marketTab !== "mine" || account))
-        tasks.push(
-          client
-            .readOrders({
-              source: catalog.source,
-              ...(marketTab === "mine"
-                ? { seller: account }
-                : { active: true }),
-            })
-            .then((result) => {
-              if (current()) {
-                setOrders(result.items);
-                setOrderCursor(result.nextCursor);
-              }
-            }),
-        );
+        tasks.orders = () => client.readOrders({
+          source: catalog.source,
+          ...(marketTab === "mine" ? { seller: account } : { active: true }),
+        });
       if (["records", "overview", "rewards"].includes(route.route))
-        tasks.push(
-          client
-            .readActivity({
-              account:
-                route.route === "records" ? undefined : account || undefined,
-              source: catalog.source,
-            })
-            .then((result) => {
-              if (current()) {
-                setActivity(result.items);
-                setActivityCursor(result.nextCursor);
-              }
-            }),
-        );
-      const results = await Promise.allSettled(tasks);
-      if (cancelled || revision !== epoch.current) return;
-      const failed = results.find((r) => r.status === "rejected");
-      if (failed) setError(textError(failed.reason));
+        tasks.activity = () => client.readActivity({
+          account: route.route === "records" ? undefined : account || undefined,
+          source: catalog.source,
+        });
+      // This is the only concurrent read boundary: no partial results reach React.
+      return { catalog, ...await settleReadRound(tasks) };
     }
-    load()
+    retryReadRound(load, { isCurrent: current, onAttempt: clearRound })
+      .then((result) => {
+        if (result === READ_CANCELLED || !current()) return;
+        setPools(result.catalog.items.map(viewPool));
+        setPoolCursor(result.catalog.nextCursor);
+        setSource(result.catalog.source);
+        if (result.stats) setStats(result.stats.data);
+        if (result.positions) {
+          setPositions(result.positions.items.map(viewPool));
+          setPositionCursor(result.positions.nextCursor);
+          setPositionsLoaded(true);
+          setMarketCredit(result.positions.marketBnbOwed);
+        }
+        if (result.detail) setDetail(viewPool(result.detail.item));
+        if (result.governance) setGovernance(result.governance.data);
+        if (result.orders) {
+          setOrders(result.orders.items);
+          setOrderCursor(result.orders.nextCursor);
+        }
+        if (result.activity) {
+          setActivity(result.activity.items);
+          setActivityCursor(result.activity.nextCursor);
+        }
+      })
       .catch((e) => {
-        if (!cancelled && revision === epoch.current) {
+        if (current()) {
           setError(textError(e));
           setPools([]);
           setPositions([]);
         }
       })
       .finally(() => {
-        if (!cancelled && revision === epoch.current) {
+        if (current()) {
           setLoading(false);
           setLoadedRoute(route.route + (route.pool ? `/${route.pool}` : ""));
         }
@@ -596,6 +565,7 @@ export default function LivePlatform() {
     }
   }
   async function prepare() {
+    if (loading || busy) return;
     const target = modal,
       context = walletEpoch.current,
       revision = epoch.current;
@@ -719,7 +689,7 @@ export default function LivePlatform() {
     }
   }
   async function submit() {
-    if (!prepared || prepared.forModal !== modal) return;
+    if (loading || busy || !prepared || prepared.forModal !== modal) return;
     setBusy(true);
     setError("");
     const requestEpoch = walletEpoch.current,
@@ -760,7 +730,7 @@ export default function LivePlatform() {
   }
   async function sendGovernanceAction(pool, action) {
     const requestEpoch = walletEpoch.current, revision = epoch.current;
-    if (busy || pending) throw new Error(L("请先完成当前交易核对。", "Resolve the current transaction first."));
+    if (loading || busy || pending) throw new Error(L("请先完成数据加载和当前交易核对。", "Wait for data loading and resolve the current transaction first."));
     setBusy(true); setError("");
     try {
       await connectJournal();
@@ -777,7 +747,7 @@ export default function LivePlatform() {
   }
   async function sendAdminAction(preview) {
     const requestEpoch = walletEpoch.current, revision = epoch.current;
-    if (busy || pending || !isOperator) throw new Error(L("运营权限或交易状态已变化，请重新读取。", "Operator permissions or transaction state changed."));
+    if (loading || busy || pending || !isOperator) throw new Error(L("运营权限或交易状态已变化，请重新读取。", "Operator permissions or transaction state changed."));
     setBusy(true); setError("");
     const current = () => requestEpoch === walletEpoch.current && revision === epoch.current;
     try {
@@ -980,7 +950,7 @@ export default function LivePlatform() {
   const moreButton = (cursor, kind) =>
     cursor !== null && cursor !== undefined ? (
       <div className="live-more">
-        <Button secondary disabled={busy} onClick={() => more(kind)}>
+        <Button secondary disabled={loading || busy} onClick={() => more(kind)}>
           {L("加载更多", "Load more")}
         </Button>
       </div>
@@ -1096,7 +1066,7 @@ export default function LivePlatform() {
     return <section className="panel"><LiveGovernance
       key={`${detail?.pool || ''}:${account || ''}`}
       selectedPool={detail?.pool} config={config} account={account} wallet={wallet}
-      readProvider={client?.provider} disabled={busy || !!pending}
+      readProvider={client?.provider} disabled={loading || busy || !!pending}
       onConnect={connect} onError={problem => setError(textError(problem))}
       onAction={sendGovernanceAction} /></section>;
   }
@@ -1234,7 +1204,7 @@ export default function LivePlatform() {
               <option value="en">English</option>
             </select>
             <Button
-              disabled={busy || boot.status !== "ready"}
+              disabled={loading || busy || boot.status !== "ready"}
               onClick={() =>
                 account ? setModal({ type: "wallet" }) : connect()
               }
@@ -1314,17 +1284,17 @@ export default function LivePlatform() {
                 onChange={(e) => setRecoveryHash(e.target.value)}
                 placeholder="0x…"
               />
-              <Button disabled={busy} onClick={recover}>
+              <Button disabled={loading || busy} onClick={recover}>
                 {L("核对最终结果", "Check final outcome")}
               </Button>
               <Button
                 secondary
-                disabled={busy}
+                disabled={loading || busy}
                 onClick={() => setModal({ type: "cancel-pending" })}
               >
                 {L("取消待定交易", "Cancel pending transaction")}
               </Button>
-              {pending.canAbandon === true && <Button secondary disabled={busy} onClick={clearUnsent}>
+              {pending.canAbandon === true && <Button secondary disabled={loading || busy} onClick={clearUnsent}>
                 {L('清除未签名准备记录', 'Clear unsigned preparation')}
               </Button>}
             </section>
@@ -1367,7 +1337,7 @@ export default function LivePlatform() {
                   "Connect your wallet to view shares and claimable balances.",
                 )}
               </p>
-              <Button disabled={busy || !client} onClick={connect}>
+              <Button disabled={loading || busy || !client} onClick={connect}>
                 {L("连接钱包", "Connect wallet")}
               </Button>
             </section>
@@ -1738,7 +1708,7 @@ export default function LivePlatform() {
                           {["Funding", "Funded"].includes(detail.status) && (
                             <Button
                               secondary
-                              disabled={!account || busy}
+                              disabled={loading || !account || busy}
                               onClick={() =>
                                 openAction("finalizeFailure", detail)
                               }
@@ -1750,7 +1720,7 @@ export default function LivePlatform() {
                             detail.shares > 0n && (
                               <Button
                                 secondary
-                                disabled={busy}
+                                disabled={loading || busy}
                                 onClick={() =>
                                   openAction("withdrawDeposit", detail)
                                 }
@@ -1847,7 +1817,7 @@ export default function LivePlatform() {
                           </strong>
                         </div>
                         <Button
-                          disabled={
+                          disabled={loading ||
                             busy ||
                             !detail.trusted ||
                             detail.depositPaused !== false ||
@@ -1871,7 +1841,7 @@ export default function LivePlatform() {
                           <strong>{amount(governance?.salePrice)} BNB</strong>
                         </div>
                         <Button
-                          disabled={
+                          disabled={loading ||
                             busy || !account || governance?.salePrice == null
                           }
                           onClick={() => openAction("completeSale", detail)}
@@ -1895,7 +1865,7 @@ export default function LivePlatform() {
                     <div className="live-actions live-actions-stack">
                       <Button
                         secondary
-                        disabled={!account || busy || !detail.claimableBEM}
+                        disabled={loading || !account || busy || !detail.claimableBEM}
                         onClick={() => openAction("claim", detail)}
                       >
                         {L("领取", "Claim")}{" "}
@@ -1903,7 +1873,7 @@ export default function LivePlatform() {
                       </Button>
                       <Button
                         secondary
-                        disabled={!account || busy || !detail.bnbOwed}
+                        disabled={loading || !account || busy || !detail.bnbOwed}
                         onClick={() => openAction("withdrawBnb", detail)}
                       >
                         {L("领取", "Claim")}{" "}
@@ -1912,7 +1882,7 @@ export default function LivePlatform() {
                       {detail.status === "Active" && (
                         <Button
                           secondary
-                          disabled={
+                          disabled={loading ||
                             !account ||
                             busy ||
                             detail.shareTradingAllowed !== true ||
@@ -1980,7 +1950,7 @@ export default function LivePlatform() {
                   note={
                     <button
                       className="text-button"
-                      disabled={!marketCredit || busy}
+                      disabled={loading || !marketCredit || busy}
                       onClick={() => openAction("marketWithdraw", null)}
                     >
                       {L("领取市场款项", "Withdraw market proceeds")}
@@ -2019,21 +1989,21 @@ export default function LivePlatform() {
                             <div className="live-actions">
                               <Button
                                 secondary
-                                disabled={busy || !p.claimableBEM}
+                                disabled={loading || busy || !p.claimableBEM}
                                 onClick={() => openAction("claim", p)}
                               >
                                 {L("领 BEM", "Claim BEM")}
                               </Button>
                               <Button
                                 secondary
-                                disabled={busy || !p.bnbOwed}
+                                disabled={loading || busy || !p.bnbOwed}
                                 onClick={() => openAction("withdrawBnb", p)}
                               >
                                 {L("领 BNB", "Claim BNB")}
                               </Button>
                               <Button
                                 secondary
-                                disabled={
+                                disabled={loading ||
                                   busy ||
                                   !["Active", "Listed"].includes(p.status)
                                 }
@@ -2143,7 +2113,7 @@ export default function LivePlatform() {
                             <td>
                               <Button
                                 secondary
-                                disabled={
+                                disabled={loading ||
                                   !account ||
                                   busy ||
                                   o.active !== true ||
@@ -2275,7 +2245,7 @@ export default function LivePlatform() {
           {route.route === 'operator' && <>
             {heading(L('运营工作台', 'Pool operations'), L('创建矿池、购机与管理矿机。', 'Create pools, purchase and manage miners.'))}
             <LiveOperator key={`${config?.factory}:${account}`} config={config} wallet={wallet} account={account}
-              operator={isOperator ? operator : null} disabled={busy || !!pending} onSend={sendAdminAction}
+              operator={isOperator ? operator : null} disabled={loading || busy || !!pending} onSend={sendAdminAction}
               onRefresh={() => setRefresh(value => value + 1)}/>
           </>}
           {route.route === "records" && (
@@ -2346,7 +2316,7 @@ export default function LivePlatform() {
             {modal.type !== "share" && (
               <button
                 className="modal-close icon-button"
-                disabled={busy}
+                disabled={loading || busy}
                 aria-label={L("关闭弹窗", "Close dialog")}
                 onClick={() => {
                   setModal(null);
@@ -2374,12 +2344,12 @@ export default function LivePlatform() {
                 <h2 id="live-dialog-title">{L("我的钱包", "My wallet")}</h2>
                 <p className="live-wrap">{account}</p>
                 <div className="live-actions">
-                  <Button disabled={busy} onClick={inspectPending}>
+                  <Button disabled={loading || busy} onClick={inspectPending}>
                     {L("核对待处理交易", "Check pending transactions")}
                   </Button>
                   <Button
                     secondary
-                    disabled={busy}
+                    disabled={loading || busy}
                     onClick={() => {
                       epoch.current++;
                       walletEpoch.current++;
@@ -2417,7 +2387,7 @@ export default function LivePlatform() {
                     "The original transaction may confirm first. The final on-chain result determines the outcome.",
                   )}
                 </p>
-                <Button disabled={busy || !pending} onClick={cancelPending}>
+                <Button disabled={loading || busy || !pending} onClick={cancelPending}>
                   {L("了解费用，前往钱包确认", "Review cancellation in wallet")}
                 </Button>
               </>
@@ -2486,7 +2456,7 @@ export default function LivePlatform() {
                       : shortAddress(modal.pool?.pool ?? config?.shareMarket)}
                   </p>
                   {!account ? (
-                    <Button disabled={busy} onClick={connect}>
+                    <Button disabled={loading || busy} onClick={connect}>
                       {L("连接钱包", "Connect wallet")}
                     </Button>
                   ) : (
@@ -2497,7 +2467,7 @@ export default function LivePlatform() {
                           <input
                             inputMode="numeric"
                             value={quantity}
-                            disabled={busy || !!prepared}
+                            disabled={loading || busy || !!prepared}
                             onChange={(e) => setQuantity(e.target.value)}
                             placeholder="1–100"
                           />
@@ -2514,7 +2484,7 @@ export default function LivePlatform() {
                           <input
                             inputMode="decimal"
                             value={price}
-                            disabled={busy || !!prepared}
+                            disabled={loading || busy || !!prepared}
                             onChange={(e) => setPrice(e.target.value)}
                             placeholder="0.00"
                           />
@@ -2570,7 +2540,7 @@ export default function LivePlatform() {
                           </p>
                           <div className="live-actions">
                             <Button
-                              disabled={busy || !!pending}
+                              disabled={loading || busy || !!pending}
                               onClick={submit}
                             >
                               {busy
@@ -2579,7 +2549,7 @@ export default function LivePlatform() {
                             </Button>
                             <Button
                               secondary
-                              disabled={busy}
+                              disabled={loading || busy}
                               onClick={() => setPrepared(null)}
                             >
                               {L("返回修改", "Edit")}
@@ -2587,7 +2557,7 @@ export default function LivePlatform() {
                           </div>
                         </>
                       ) : (
-                        <Button disabled={busy || !!pending} onClick={prepare}>
+                        <Button disabled={loading || busy || !!pending} onClick={prepare}>
                           {busy
                             ? L("正在核对…", "Checking…")
                             : L("核对交易金额", "Review transaction")}

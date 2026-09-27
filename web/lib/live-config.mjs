@@ -43,7 +43,7 @@ export async function fetchLiveJson(url, { fetcher = globalThis.fetch, method = 
       signal: abort.signal, headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (allow404 && response.status === 404) return null;
-    insist(response.ok, 'http_unavailable', `数据服务暂不可用（HTTP ${response.status}）。`);
+    if (!response.ok) throw new LiveDataError('http_unavailable', `数据服务暂不可用（HTTP ${response.status}）。`, { status: response.status });
     insist(!response.redirected, 'http_redirect', '数据服务不能重定向。');
     const contentType = response.headers?.get('content-type') ?? '';
     insist(/\bapplication\/([\w.+-]*\+)?json\b/i.test(contentType), 'invalid_json', '数据服务未返回 JSON。');

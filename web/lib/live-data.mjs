@@ -16,6 +16,20 @@ const sameSource = (a, b) => a.chainId === b.chainId && a.factory === b.factory 
   && a.startBlock === b.startBlock && a.indexedThrough === b.indexedThrough && a.indexedBlockHash === b.indexedBlockHash
   && a.indexedTimestamp === b.indexedTimestamp;
 
+async function verifyInParallel(checks) {
+  let next = 0, failed = false, failure;
+  const workers = Array.from({ length: Math.min(4, checks.length) }, async () => {
+    while (!failed && next < checks.length) {
+      const check = checks[next++];
+      try { await check(); }
+      catch (error) { if (!failed) { failed = true; failure = error; } }
+    }
+  });
+  // A rejected read must not leave RPC work running into the next page attempt.
+  await Promise.all(workers);
+  if (failed) throw failure;
+}
+
 export function validateIndexSource(input, manifest, { now = Date.now(), maxAgeMs = 120000 } = {}) {
   insist(input && input.chainId === 56 && sameAddress(input.factory, manifest.factory)
     && sameAddress(input.market, manifest.shareMarket), 'index_identity', '索引合约身份与部署清单不一致。');
@@ -50,7 +64,7 @@ export function createLiveDataClient(config, { provider, fetcher = globalThis.fe
   const request = (method, params = []) => rpc.request({ method, params });
   const indexBase = new URL(config.indexBaseUrl);
   insist(indexBase.origin === config.origin && !indexBase.search && !indexBase.hash, 'invalid_config', '索引必须来自本站配置。');
-  const verified = new Map();
+  const verified = new Map(), verifying = new Map();
 
   async function blockHeader(blockNumber) {
     insist(BigInt(await request('eth_chainId')) === 56n, 'wrong_chain', '请切换至 BSC 主网。');
@@ -71,24 +85,39 @@ export function createLiveDataClient(config, { provider, fetcher = globalThis.fe
     const b = await blockHeader(blockNumber);
     insist(b.number >= BigInt(manifest.verifiedBlockNumber), 'deployment_block', '所选区块早于部署核验。');
     const key = `${b.number}:${b.hash}`;
-    if (!verified.has(key)) {
-      const deployment = await blockHeader(BigInt(manifest.deployment.blockNumber));
-      insist(deployment.hash === manifest.deployment.blockHash.toLowerCase(), 'deployment_reorg', '部署区块与清单不符。');
-      for (const name of MANIFEST_KEYS) {
-        const code = await request('eth_getCode', [manifest[name], toQuantity(b.number)]);
-        insist(typeof code === 'string' && /^0x(?:[\da-f]{2})+$/i.test(code) && keccak256(code) === manifest.codehash[name], 'deployment_code', `${name} 运行代码与清单不一致。`);
-      }
-      const checks = [[manifest.factory, 'lens', manifest.lens], [manifest.factory, 'shareMarket', manifest.shareMarket],
-        [manifest.factory, 'beacon', manifest.beacon], [manifest.factory, 'timelock', manifest.timelock],
-        [manifest.lens, 'factory', manifest.factory], [manifest.shareMarket, 'factory', manifest.factory],
-        [manifest.shareMarket, 'timelock', manifest.timelock], [manifest.beacon, 'owner', manifest.timelock]];
-      for (const [to, method, expected] of checks) insist(sameAddress((await call(to, bindings, method, [], b.number))[0], expected), 'deployment_binding', '链上部署关系与清单不一致。');
-      insist((await call(manifest.lens, bindings, 'VERSION', [], b.number))[0] === 1n, 'lens_version', '不支持的只读聚合版本。');
-      if (verified.size >= 8) verified.delete(verified.keys().next().value);
-      verified.set(key, true);
+    let pending = verifying.get(key);
+    if (!pending) {
+      pending = (async () => {
+        if (!verified.has(key)) {
+          const deployment = await blockHeader(BigInt(manifest.deployment.blockNumber));
+          insist(deployment.hash === manifest.deployment.blockHash.toLowerCase(), 'deployment_reorg', '部署区块与清单不符。');
+          const checks = MANIFEST_KEYS.map(name => async () => {
+            const code = await request('eth_getCode', [manifest[name], toQuantity(b.number)]);
+            insist(typeof code === 'string' && /^0x(?:[\da-f]{2})+$/i.test(code) && keccak256(code) === manifest.codehash[name], 'deployment_code', `${name} 运行代码与清单不一致。`);
+          });
+          const relationships = [[manifest.factory, 'lens', manifest.lens], [manifest.factory, 'shareMarket', manifest.shareMarket],
+            [manifest.factory, 'beacon', manifest.beacon], [manifest.factory, 'timelock', manifest.timelock],
+            [manifest.lens, 'factory', manifest.factory], [manifest.shareMarket, 'factory', manifest.factory],
+            [manifest.shareMarket, 'timelock', manifest.timelock], [manifest.beacon, 'owner', manifest.timelock]];
+          for (const [to, method, expected] of relationships) checks.push(async () => {
+            insist(sameAddress((await call(to, bindings, method, [], b.number))[0], expected), 'deployment_binding', '链上部署关系与清单不一致。');
+          });
+          checks.push(async () => insist((await call(manifest.lens, bindings, 'VERSION', [], b.number))[0] === 1n, 'lens_version', '不支持的只读聚合版本。'));
+          await verifyInParallel(checks);
+        }
+        const after = await blockHeader(b.number);
+        insist(after.hash === b.hash, 'source_reorg', '读取期间发生区块变化。');
+        // Cache only a fully drained verification whose final canonical check passed.
+        if (!verified.has(key)) {
+          if (verified.size >= 8) verified.delete(verified.keys().next().value);
+          verified.set(key, true);
+        }
+      })();
+      verifying.set(key, pending);
     }
-    const after = await blockHeader(b.number);
-    insist(after.hash === b.hash, 'source_reorg', '读取期间发生区块变化。');
+    try { await pending; }
+    catch (error) { verified.delete(key); throw error; }
+    finally { if (verifying.get(key) === pending) verifying.delete(key); }
     return Object.freeze({ chainId: 56n, factory: manifest.factory, lens: manifest.lens, blockNumber: b.number, blockHash: b.hash, timestamp: b.timestamp });
   }
   async function indexRead(path, query = {}, expected) {
