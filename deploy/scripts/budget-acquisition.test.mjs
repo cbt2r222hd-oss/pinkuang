@@ -4,6 +4,7 @@ import { planBudgetAcquisition } from './budget-acquisition.mjs';
 
 const now = 1_780_000_000_000;
 const snapshot = { complete: true, blockNumber: 123, blockHash: `0x${'ab'.repeat(32)}`, observedAt: now - 10_000 };
+const firstoCoverage = { ...snapshot };
 const collection = '0xb1024b89886b9a34aa4ff5f31c411d708b20a14c';
 const seller = '0x2222222222222222222222222222222222222222';
 const miner = (id, cost, venue = 'official', extra = {}) => ({ collection, tokenId: String(id), seller,
@@ -12,7 +13,7 @@ const miner = (id, cost, venue = 'official', extra = {}) => ({ collection, token
   snapshotBlock: snapshot.blockNumber, snapshotHash: snapshot.blockHash,
   ...(venue === 'firsto' ? { signedAskVerified: true } : {}), ...extra });
 const plan = (budgetWei, official, firsto = [], other = {}) => planBudgetAcquisition({
-  budgetWei: String(budgetWei), official, firsto, snapshot, now, ...other,
+  budgetWei: String(budgetWei), official, firsto, snapshot, firstoCoverage, now, ...other,
 });
 
 test('a fixed 100-share BNB budget buys cheapest official miners first, then Firsto, and refunds exact remainder', () => {
@@ -50,6 +51,11 @@ test('stale or partial discovery cannot be presented as the current cheapest pla
     { ...snapshot, blockHash: `0x${'0'.repeat(63)}` }])
     assert.throws(() => plan(100, [miner(1, 50)], [], { snapshot: broken }), /snapshot/);
   assert.throws(() => plan(101, [miner(1, 50)]), /100 integer shares/);
+  for (const incomplete of [undefined, { ...firstoCoverage, complete: false },
+    { ...firstoCoverage, blockNumber: 124 }, { ...firstoCoverage, observedAt: now - 300_001 }]) {
+    assert.throws(() => plan(100, [], [miner(1, 50, 'firsto')], { firstoCoverage: incomplete }),
+      /Firsto candidate coverage/);
+  }
 });
 
 test('unverified, mismatched, changed or over-cap miners block an actionable plan', () => {

@@ -26,7 +26,7 @@ const order = (left, right) => left.costWei < right.costWei ? -1 : left.costWei 
  * identity still require a fresh check in every on-chain purchase transaction.
  */
 export function planBudgetAcquisition({ budgetWei, official = [], firsto = [], snapshot,
-  maxMachines = 256, now = Date.now() } = {}) {
+  firstoCoverage, maxMachines = 256, now = Date.now() } = {}) {
   const budget = exact(budgetWei, 'budgetWei');
   need(budget > 0n && budget % 100n === 0n, 'Budget must fund exactly 100 integer shares.');
   need(Number.isInteger(maxMachines) && maxMachines > 0 && maxMachines <= 256, 'Invalid machine page limit.');
@@ -36,6 +36,15 @@ export function planBudgetAcquisition({ budgetWei, official = [], firsto = [], s
     && now - snapshot.observedAt <= 5 * 60_000, 'Market snapshot is incomplete or stale.');
   need(Array.isArray(official) && Array.isArray(firsto) && official.length + firsto.length <= 20_000,
     'Invalid candidate coverage.');
+  // The official discovery snapshot says nothing about Firsto's paginated order book.
+  // A single valid signed ask is not evidence that cheaper executable asks were scanned.
+  if (firsto.length) need(firstoCoverage?.complete === true
+    && firstoCoverage.blockNumber === snapshot.blockNumber
+    && firstoCoverage.blockHash === snapshot.blockHash
+    && Number.isSafeInteger(firstoCoverage.observedAt)
+    && firstoCoverage.observedAt <= now + 30_000
+    && now - firstoCoverage.observedAt <= 5 * 60_000,
+  'Firsto candidate coverage is incomplete, stale or at a different block.');
 
   function prepare(rows, venue) {
     return rows.map(candidate => {
