@@ -32,7 +32,7 @@ export default function OperatorQuotePicker({ config, mode, disabled, onApply })
     try {
       const result = await loadOperatorQuote({ collection: row.collection, tokenId: row.tokenId, config, mode, signal: abort.signal });
       if (sequence === request.current.sequence) setSelected(result);
-    } catch (problem) { if (sequence === request.current.sequence) setError(operatorQuoteError(problem)); }
+    } catch (problem) { if (sequence === request.current.sequence) setError(`${row.series} #${row.tokenId}：${operatorQuoteError(problem)}`); }
     finally { if (sequence === request.current.sequence) setBusy(false); }
   }
   function search() {
@@ -65,7 +65,7 @@ export default function OperatorQuotePicker({ config, mode, disabled, onApply })
     {error && <p className="live-notice error" role="alert">{error}</p>}
     {busy && <p role="status">正在读取并核对矿机数据…</p>}
     {!busy && page && <><div className="operator-quote-table"><table><thead><tr><th>矿机</th><th>市场挂单价</th><th>预计日产出</th><th>报价来源</th><th/></tr></thead><tbody>
-      {page.rows.map(row => <tr key={`${row.collection}:${row.tokenId}`}><td>{row.series} #{row.tokenId}<small>Firsto 状态：{firstoStatus[row.status] || row.status} · 以链上复核为准</small></td><td>{amount(row.ask?.priceWei)} BNB</td><td>{amount(row.estimated24hAtomic, 8)} BEM</td><td>{row.ask?.venue === 'official' ? 'Firsto 索引 · 官网待链上核验' : row.ask ? row.ask.kind === 'signed_ask' ? 'Firsto · 待链上核验' : 'Firsto 批量 · 仅供参考' : '未挂单'}</td><td><button className="btn secondary" disabled={blocked} onClick={() => void choose(row)}>链上核对并选择</button></td></tr>)}
+      {page.rows.map(row => <tr key={`${row.collection}:${row.tokenId}`}><td>{row.series} #{row.tokenId}<small>Firsto 状态：{firstoStatus[row.status] || row.status || '未知'} · 以链上复核为准</small></td><td>{amount(row.ask?.priceWei)} BNB</td><td>{amount(row.estimated24hAtomic, 8)} BEM</td><td>{row.ask?.venue === 'official' ? 'Firsto 索引 · 官网待链上核验' : row.ask ? row.ask.kind === 'signed_ask' ? 'Firsto · 待链上核验' : 'Firsto 批量 · 仅供参考' : '未挂单'}</td><td><button className="btn secondary" disabled={blocked} onClick={() => void choose(row)}>链上核对并选择</button></td></tr>)}
     </tbody></table></div>{!page.rows.length && <p>未找到符合身份检查的报价，请调整搜索条件。</p>}
       <div className="operator-tabs"><button className="btn secondary" disabled={blocked || page.page <= 1} onClick={() => void load(page.page - 1)}>上一页</button><span>第 {page.page} / {Math.max(page.totalPages, 1)} 页</span><button className="btn secondary" disabled={blocked || page.page >= page.totalPages} onClick={() => void load(page.page + 1)}>下一页</button></div></>}
     {selected && <div className="operator-quote-selected"><h4><CheckCircle2 size={18}/>{Object.entries(OFFICIAL_COLLECTIONS).find(([, address]) => address.toLowerCase() === selected.chain.collection.toLowerCase())?.[0]} #{selected.chain.tokenId} · 矿机链上核对通过</h4>
