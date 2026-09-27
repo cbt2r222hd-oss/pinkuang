@@ -13,7 +13,7 @@
 | 挖矿平台 1% BEM | 池 `harvest()` 记账时**直接把 BEM 转至 pool.treasury** | 触发归集者支付 Gas；BEM 平台费无需另发提款交易。现有恢复挖矿 supervisor 不负责定时 `harvest()`。 |
 | 份额市场卖方 1% + 买方 1% BNB | 开发分支的 ShareMarket 按该池 `treasury()` 记入 `bnbOwed`；主网尚须升级验收 | treasury 自行调用 ShareMarket `withdrawBnb()`，支付 Gas；脚本只领取链上实际记账金额。 |
 | 整机出售平台 1% BNB | 现有内部出售结算记入池 `bnbOwed[treasury]`；Firsto 原生出售仍待合约实现 | treasury 自行调用该池 `withdrawBnb()`。未来 Firsto 路径必须保持相同权利。 |
-| Firsto 出售前矿机 BEM 归集 | 目标流程是在挂单前确认该台矿机归集到账，项目则须继续把子池 BEM 记到共同份额；当前 Firsto 卖方适配未实现 | 后台运营钱包支付归集交易 Gas；若领取失败，不发布本轮挂单。未来成交时不要求待领余额再次归零。 |
+| Firsto 出售前矿机 BEM 归集 | 目标流程要求 NFT 实际过户前严格验证该台矿机待领 BEM 为零，已领取 BEM 留在矿池并记入共同份额；当前 Firsto 卖方适配未实现。Firsto 批量购买路由在已核验成交中先领后转，但 Signed Ask V2 直购不自动领取 | 后台运营钱包可支付挂单前归集的 Gas；归集失败或成交时待领未归零，必须阻止过户。 |
 | Firsto 成交时 NFT 过户 | Firsto `fillSignedAsk` 由买家支付售价并发起交易，NFT 在该交易中转给指定接收地址 | 原生成交网络 Gas 先由买家付。后台钱包不能在该买家交易内直接成为 Gas payer；如要平台承担，须成交后依据链上回执向买家限额返还，或证明 Firsto 支持真实代付路径。此补贴未实现，也不计为平台 1% 手续费。 |
 | 多矿机项目官网采购服务费 1% | 项目在结算时从可退余款记入 `bnbOwed[treasury]` | 待多机项目完成部署及索引后，扩展收款执行器枚举该 Factory 的项目；当前脚本尚未覆盖。 |
 
