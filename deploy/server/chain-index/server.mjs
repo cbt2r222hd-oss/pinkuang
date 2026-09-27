@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { JsonRpcProvider } from 'ethers';
+import { FetchRequest, JsonRpcProvider } from 'ethers';
 import { ChainIndex } from './indexer.mjs';
 import { createChainIndexServer } from './api.mjs';
 
@@ -27,7 +27,15 @@ export function serverConfiguration(env = process.env) {
 }
 
 export async function startChainIndex(config) {
-  const provider = new JsonRpcProvider(config.rpc);
+  const request = new FetchRequest(config.rpc);
+  request.timeout = 12_000;
+  // The sync loop retries failures; an upstream Retry-After must not hold shutdown open.
+  request.retryFunc = async () => false;
+  const provider = new JsonRpcProvider(request, 56, {
+    staticNetwork: true, cacheTimeout: -1, batchMaxCount: 8,
+  });
+  // ChainIndex asks eth_chainId directly on every sync before indexing any data.
+  // The static network avoids ethers' separate, indefinitely retrying bootstrap loop.
   let index;
   let server;
   try {
@@ -49,6 +57,7 @@ export async function startChainIndex(config) {
   let stopped = false;
   let timer = null;
   let running;
+  let closing;
   async function tick() {
     if (stopped) return;
     try { await index.sync(); }
@@ -56,13 +65,18 @@ export async function startChainIndex(config) {
     if (!stopped) timer = setTimeout(() => { running = tick(); }, index.status().complete ? 10_000 : 1_000);
   }
   running = tick();
-  return { index, server, async close() {
-    stopped = true;
-    if (timer) clearTimeout(timer);
-    await running;
-    await new Promise(resolve => server.close(resolve));
-    index.close();
-    provider.destroy();
+  return { index, server, close() {
+    if (closing) return closing;
+    closing = (async () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      // Cancel queued reads now; any active HTTP request is bounded by its 12s timeout.
+      provider.destroy();
+      await running;
+      await new Promise(resolve => server.close(resolve));
+      index.close();
+    })();
+    return closing;
   } };
 }
 
