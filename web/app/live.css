@@ -766,3 +766,161 @@
 .live-platform .purchase-panel .ownership strong {
   text-align: right;
 }
+
+/* Keep touch controls and dialogs usable in iPhone portrait and landscape. */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+.app-shell {
+  min-height: 100dvh;
+}
+.modal-overlay {
+  padding: max(12px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+  overscroll-behavior: contain;
+}
+.modal-overlay .modal {
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - max(24px, env(safe-area-inset-top)) - max(24px, env(safe-area-inset-bottom)));
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.preview-banner {
+  bottom: max(12px, env(safe-area-inset-bottom));
+}
+body:has(.preview-banner) .page-footer {
+  padding-bottom: calc(110px + env(safe-area-inset-bottom));
+}
+@media (max-width: 760px), (pointer: coarse) and (max-width: 960px) and (max-height: 500px) {
+  .app-shell input,
+  .app-shell select,
+  .app-shell textarea {
+    font-size: 16px !important;
+  }
+  .app-shell button,
+  .app-shell .btn,
+  .app-shell select,
+  .preview-banner a {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+  .app-shell .icon-button,
+  .app-shell .top-actions > .appearance-toggle {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .app-shell .top-actions {
+    gap: 6px;
+    min-width: 0;
+  }
+  .app-shell .top-actions .language-switch {
+    width: 98px;
+    max-width: 98px;
+    padding-inline: 4px;
+  }
+  .app-shell .topbar {
+    min-height: 68px;
+    height: auto;
+    padding-top: max(10px, env(safe-area-inset-top));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-bottom: 10px;
+    padding-left: max(12px, env(safe-area-inset-left));
+  }
+  .app-shell main {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+  }
+  .app-shell .sidebar {
+    padding-top: max(26px, env(safe-area-inset-top));
+    padding-left: max(17px, env(safe-area-inset-left));
+    padding-bottom: env(safe-area-inset-bottom);
+    max-height: 100dvh;
+    overscroll-behavior: contain;
+  }
+  .app-shell .btn,
+  .app-shell .back-link,
+  .app-shell .text-button,
+  .app-shell .bemine-hero-link {
+    white-space: normal;
+  }
+  .app-shell .language-switch + .wallet-button {
+    min-width: 0;
+  }
+  .app-shell .table-wrap,
+  .app-shell .tabs,
+  .app-shell .catalog-tabs {
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .app-shell .modal-overlay {
+    padding: max(12px, env(safe-area-inset-top))
+      max(12px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+  }
+  .app-shell .modal-close {
+    top: 8px;
+    right: 8px;
+  }
+  .preview-banner a {
+    display: inline-flex;
+    align-items: center;
+  }
+  .preview-banner {
+    padding-block: 6px;
+  }
+  body:has(.preview-banner) .page-footer {
+    padding-bottom: calc(160px + env(safe-area-inset-bottom));
+  }
+  .app-shell .toast {
+    bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  body:has(.preview-banner) .toast {
+    bottom: calc(110px + env(safe-area-inset-bottom));
+  }
+}
+@media (pointer: coarse) and (min-width: 761px) and (max-width: 960px) and (max-height: 500px) {
+  .app-shell .sidebar {
+    width: 250px;
+    transform: translateX(-100%);
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .app-shell .sidebar.open {
+    transform: none;
+    visibility: visible;
+    pointer-events: auto;
+  }
+  .app-shell .workspace {
+    margin-left: 0;
+  }
+  .app-shell .mobile-menu {
+    display: flex;
+  }
+  .app-shell .mobile-scrim {
+    position: fixed;
+    inset: 0;
+    background: #0c1a3655;
+    z-index: 39;
+  }
+  .app-shell .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+  .app-shell .detail-layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .app-shell .detail-main,
+  .app-shell .purchase-panel {
+    width: 100%;
+  }
+  .app-shell .detail-layout > .purchase-panel {
+    position: static;
+    order: -1;
+  }
+}

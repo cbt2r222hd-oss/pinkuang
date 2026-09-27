@@ -20,4 +20,4 @@
 .privacy{font-size:13px;line-height:1.6;margin:15px 0 0;color:var(--muted,#6b766e);font-weight:550}
 .notice{min-height:21px;font-size:13px;line-height:1.6;margin:6px 0 0;color:var(--ink,#283e36);font-weight:600}
 .card button:focus-visible,.card a:focus-visible,.preview textarea:focus-visible{outline:3px solid var(--brand-gold,#cab17b);outline-offset:3px}
-@media(max-width:480px){.card{padding:18px;border-radius:10px}.card .heading{font-size:21px}.preview{padding:15px;margin-top:16px}.project{font-size:19px}.actions{gap:8px}.actions a,.actions button{font-size:14px;padding:10px 8px}.preview textarea{font-size:15px;min-height:175px}}
+@media(max-width:480px){.card{padding:18px;border-radius:10px}.card .heading{font-size:21px}.preview{padding:15px;margin-top:16px}.project{font-size:19px}.actions{gap:8px}.actions a,.actions button{font-size:14px;padding:10px 8px}.preview textarea{font-size:16px;min-height:175px}}

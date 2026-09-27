@@ -5,7 +5,7 @@
 ## 页面入口
 
 - `/`：保留现有墨绿香槟金设计的产品页。钱包、项目、持仓、收益、市场、治理和公开记录使用真实接口；无部署清单时显示即将开放，禁止交易。
-- `/preview.html`：原来的完整交互演示；本地 `next dev` 下为 `/preview`。模拟余额与按钮行为只在此入口使用。
+- `/preview.html`：完整交互演示；本地 `next dev` 下为 `/preview`。模拟余额与按钮行为只在此入口使用。底栏的「查看分享效果」和 `#share/16928` 可直接打开分享卡；模拟认购完成后也会打开。
 - `/#detail/<poolAddress>`：项目永久链接，采用池合约地址，不使用矿机编号识别项目；同一矿机可经历不同项目。
 
 首页累计项目、历史参与地址使用已确认索引。当前管理数量与预估日产暂未有可靠数据口径，因此显示 `—`。列表筛选和统计仅作用于已加载项目；分页检测区块变化时要求刷新，不拼接来自不同快照的余额。持仓页保留份额已售完但仍有 BEM 或 BNB 债权的项目。收益曲线展示实际归集及本人实际领取，不将它们冒充当日产能或当日应计收益。
@@ -43,15 +43,19 @@
 - 文案不含用户钱包、个人投入、交易 hash。不会自动发消息或加载第三方社交 SDK；用户在 Telegram/X 窗口最终确认发送。
 - 当前是文案与深链分享。社交平台抓取的是首页元信息，尚无项目专属 OG 图片、邀请排行榜或分享转化追踪。
 
+演示入口使用单独的 `DemoProjectShare`，文案明确标注样例数据和未发生真实交易，链接固定指向 `/bemine/preview.html#detail/<演示矿机编号>`。它不构造链上成功回执，不复用正式项目地址，也不能通过参数切换为正式成功文案。Telegram 和 X 使用同一份精简文案，用户可在站内直接查看、复制，然后由本人在社交平台确认发送。预览页提供通用 Open Graph 元信息；不同矿机尚没有独立的社交图片。
+
+iPhone 优先适配覆盖窄屏表单字号、44px 触控区域、动态视口弹窗、安全区和横屏导航；脚本 `web/scripts/iphone-browser-check.mjs` 使用触控视口仿真检查。仿真不等于 iPhone 真机或 Safari 内核验收，钱包应用回跳和系统键盘仍需真机补测。
+
 ## 部署后的配置清单
 
-以下仅是交接说明，本次未执行生产配置或部署。
+以下是正式启用链上业务前的配置清单。临时页面预览不启用交易后端或部署合约。
 
 1. 部署并验收 Factory、Lens、Market 等合约，导出对应版本的清单。ABI 漂移检查必须通过。
 2. 按 [索引服务说明](../deploy/server/chain-index/README.md) 配置 `CHAIN_INDEX_*` 并从 Factory 部署块开始完整索引。
 3. 按 [日志服务说明](../deploy/server/JOURNAL.md) 配置私有 SQLite、可信 BSC RPC、生产 HTTPS origin；设置 `BEMINE_JOURNAL_FACTORIES` 为已审查的 Factory 地址。未列入白名单时拒绝产品交易意图。
 4. 设置 `BEMINE_READ_RPC_URL`（可回退 `DEPLOYMENT_JOURNAL_RPC_URL`）和 `BEMINE_INDEX_URL`（默认 `http://127.0.0.1:4180`）。RPC 密钥仅存在服务端。
-5. 同一个 HTTPS origin 下，将产品静态文件部署到 `/bemine/`，把根路径 `/api/journal/`、`/api/rpc`、`/api/chain-index/` 转发到现有 `deploy/server/index.mjs`。cookie 路径为 `/api/journal`，不能随意改成 `/bemine/api/journal`。
+5. 同一个 HTTPS origin 下，将产品静态文件部署到 `/bemine/`，将精确的 `/api/journal/`、`/api/rpc`、`/api/chain-index/` 产品端点转发到现有 `deploy/server/index.mjs`。当前域名的 `/api/` 属于其他应用，正式启用前必须先核对端点冲突，不能整体替换其反向代理。cookie 路径为 `/api/journal`，不能随意改成 `/bemine/api/journal`。
 6. `NEXT_PUBLIC_BASE_PATH=/bemine pnpm build`，保留独立币价缓存文件和已有历史审查目录。部署台与主产品必须提供同版本 ABI；保留既有管理员入口和管理服务。
 7. 验收最小金额真实认购、finalized 后分享、朋友打开深链、账户/网络切换、拒签与恢复、退款/领取、份额撤单及过期解锁；确认移动钱包可用后再开放资金入口。
 
