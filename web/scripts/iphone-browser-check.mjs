@@ -92,7 +92,10 @@ try {
       assert(action.y >= 0 && action.y + action.height <= height, 'demo share actions must scroll into view');
       const url = new URL(await telegram.getAttribute('href'));
       assert.equal(url.hostname, 't.me');
-      assert(url.searchParams.get('url').includes('preview.html'));
+      const invitation = new URL(url.searchParams.get('url'));
+      assert(invitation.pathname.startsWith('/bemine/share/'));
+      assert.equal(invitation.searchParams.get('mode'), 'demo');
+      assert.equal(invitation.searchParams.get('project'), '16928');
       if (width === 375 || width === 852) await page.screenshot({ animations: 'disabled', path: join(output, `demo-share-${language}-${width}.png`) });
       await page.getByRole('button', { name: language === 'en' ? 'Close sharing' : '关闭分享', exact: true }).click();
       await page.evaluate(() => scrollTo(0, document.documentElement.scrollHeight));

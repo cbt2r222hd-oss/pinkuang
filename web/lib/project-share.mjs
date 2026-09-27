@@ -3,6 +3,7 @@
 // https://core.telegram.org/widgets/share
 // https://docs.x.com/x-for-websites/post-button/overview
 import { shareMotto } from './share-copy.mjs';
+import { makeArtworkShareUrl } from './share-landing.mjs';
 export const DEFAULT_PUBLIC_SHARE_BASE = 'https://tapeout.cc.cd/bemine/';
 const PUBLIC_ORIGINS = new Set(['https://tapeout.cc.cd']);
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
@@ -78,10 +79,11 @@ function projectStatus(project, english) {
   return labels[project.state]?.[english ? 1 : 0] ?? (english ? 'View the latest project status.' : '查看项目最新状态。');
 }
 
-export function createProjectShare({ publicBaseUrl, project, confirmation, locale = 'zh', mottoIndex = 0 } = {}) {
+export function createProjectShare({ publicBaseUrl, project, confirmation, locale = 'zh', mottoIndex = 0, posterId = 'original' } = {}) {
   if (!project || !COLLECTION_NAMES.has(project.name)) return null;
   const id = identifier(project.circuitId);
-  const url = buildProjectShareUrl(publicBaseUrl, project.poolAddress);
+  const projectUrl = buildProjectShareUrl(publicBaseUrl, project.poolAddress);
+  const url = makeArtworkShareUrl(projectUrl, posterId);
   if (id === null || !url) return null;
   const english = locale === 'en';
   const confirmed = isConfirmedDeposit(confirmation, project.poolAddress);
@@ -101,12 +103,12 @@ export function createProjectShare({ publicBaseUrl, project, confirmation, local
   const xText = `BEMine · ${title}\n${motto}\n${xStatus}`;
   const intent = (endpoint, source, intentText = text) => {
     const target = new URL(endpoint);
-    target.searchParams.set('url', buildProjectShareUrl(publicBaseUrl, project.poolAddress, source));
+    target.searchParams.set('url', makeArtworkShareUrl(buildProjectShareUrl(publicBaseUrl, project.poolAddress, source), posterId));
     target.searchParams.set('text', intentText);
     return target.href;
   };
   return {
-    title, text, xText, motto, url, copyText: `${text}\n${url}`, confirmed, status, canSubscribe,
+    title, text, xText, motto, url, projectUrl, copyText: `${text}\n${url}`, confirmed, status, canSubscribe,
     stateKnown: STATES.has(project.state),
     telegramUrl: intent('https://t.me/share/url', 'tg'),
     xUrl: intent('https://x.com/intent/tweet', 'x', xText),

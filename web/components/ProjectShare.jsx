@@ -3,9 +3,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { CheckCircle2, Copy, Link2, Send, Share2, X } from 'lucide-react';
 import { createProjectShare } from '../lib/project-share.mjs';
-import { SHARE_MOTTO_COUNT } from '../lib/share-copy.mjs';
 import ShareArtwork from './ShareArtwork';
 import ShareCopyControls from './ShareCopyControls';
+import useShareVariation from './useShareVariation';
 import styles from './ProjectShare.module.css';
 
 const COPY = {
@@ -30,9 +30,9 @@ const COPY = {
 /** Only pass a receipt finalised and verified by the transaction layer. No third-party SDKs or automatic sends. */
 export default function ProjectShare({ locale = 'zh', publicBaseUrl, project, confirmation, onDismiss }) {
   const copy = COPY[locale === 'en' ? 'en' : 'zh'];
-  const [mottoIndex, setMottoIndex] = useState(0);
+  const { posterId, mottoIndex, ready, changeVariation } = useShareVariation();
   const [channel, setChannel] = useState('telegram');
-  const model = createProjectShare({ locale, publicBaseUrl, project, confirmation, mottoIndex });
+  const model = createProjectShare({ locale, publicBaseUrl, project, confirmation, mottoIndex, posterId });
   const headingId = useId();
   const previewRef = useRef(null);
   const [notice, setNotice] = useState('');
@@ -64,11 +64,11 @@ export default function ProjectShare({ locale = 'zh', publicBaseUrl, project, co
     </div>
     <h2 id={headingId} className={styles.heading}>{copy.heading}</h2>
     <p className={styles.intro}>{copy.intro}</p>
-    <ShareArtwork locale={locale} />
+    <ShareArtwork locale={locale} posterId={posterId} ready={ready} />
     <div className={styles.preview}>
       <div className={styles.brand}>拼矿 <span>BEMine</span></div>
       <strong className={styles.project}>{model.title}</strong>
-      <ShareCopyControls locale={locale} channel={channel} onChannelChange={setChannel} onNextMotto={() => { setMottoIndex(index => (index + 1) % SHARE_MOTTO_COUNT); setNotice(''); }} />
+      <ShareCopyControls locale={locale} channel={channel} onChannelChange={setChannel} ready={ready} onNextVariation={() => { changeVariation(); setNotice(''); }} />
       <textarea ref={previewRef} aria-label={`${channel === 'x' ? 'X' : 'Telegram'} ${copy.label}`} readOnly value={selectedCopy} rows={6} />
     </div>
     <div className={styles.actions}>

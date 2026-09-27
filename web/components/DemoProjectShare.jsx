@@ -3,9 +3,9 @@
 import { useRef, useState } from 'react';
 import { Copy, Link2, Send, Share2, X } from 'lucide-react';
 import { createDemoShare } from '../lib/demo-share.mjs';
-import { SHARE_MOTTO_COUNT } from '../lib/share-copy.mjs';
 import ShareArtwork from './ShareArtwork';
 import ShareCopyControls from './ShareCopyControls';
+import useShareVariation from './useShareVariation';
 import styles from './DemoProjectShare.module.css';
 
 const copy = {
@@ -35,9 +35,9 @@ const copy = {
 
 export default function DemoProjectShare({ project, locale = 'zh', simulationComplete = false, onDismiss }) {
   const labels = copy[locale === 'en' ? 'en' : 'zh'];
-  const [mottoIndex, setMottoIndex] = useState(0);
+  const { posterId, mottoIndex, ready, changeVariation } = useShareVariation();
   const [channel, setChannel] = useState('telegram');
-  const model = createDemoShare({ project, locale, mottoIndex });
+  const model = createDemoShare({ project, locale, mottoIndex, posterId });
   const textRef = useRef(null);
   const linkRef = useRef(null);
   const [notice, setNotice] = useState('');
@@ -64,12 +64,12 @@ export default function DemoProjectShare({ project, locale = 'zh', simulationCom
     <h2 id="dialog-title" className={styles.heading}>{model ? simulationComplete ? labels.complete : labels.heading : labels.unavailable}</h2>
     {model && <>
       <p className={styles.intro}>{labels.intro}</p>
-      <ShareArtwork locale={locale} />
+      <ShareArtwork locale={locale} posterId={posterId} ready={ready} />
       <div className={styles.preview}>
         <div className={styles.brand}>拼矿 <span>BEMine</span></div>
         <strong className={styles.project}>{model.title}</strong>
         <label className={styles.label} htmlFor="demo-share-text">{labels.label}</label>
-        <ShareCopyControls locale={locale} channel={channel} onChannelChange={setChannel} onNextMotto={() => { setMottoIndex(index => (index + 1) % SHARE_MOTTO_COUNT); setNotice(''); }} />
+        <ShareCopyControls locale={locale} channel={channel} onChannelChange={setChannel} ready={ready} onNextVariation={() => { changeVariation(); setNotice(''); }} />
         <textarea id="demo-share-text" ref={textRef} readOnly value={selectedText} rows={4} />
         <label className={styles.label} htmlFor="demo-share-link">{labels.project}</label>
         <input id="demo-share-link" ref={linkRef} readOnly value={model.url} />

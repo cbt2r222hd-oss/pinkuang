@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_PUBLIC_SHARE_BASE, validatePublicBaseUrl, buildProjectShareUrl, isConfirmedDeposit, createProjectShare } from '../lib/project-share.mjs';
+import { SHARE_MOTTO_COUNT, shareMotto } from '../lib/share-copy.mjs';
+import { SHARE_ARTWORKS } from '../lib/share-artwork.mjs';
+import { makeArtworkShareUrl } from '../lib/share-landing.mjs';
 
 const pool = `0x${'a1'.repeat(20)}`;
 const other = `0x${'b2'.repeat(20)}`;
@@ -53,7 +56,7 @@ test('share intents encode bilingual text and the project URL without parameter 
       assert.equal(intent.origin, origin);
       assert.equal(intent.pathname, path);
       assert.equal(intent.searchParams.get('text'), source === 'x' ? share.xText : share.text);
-      assert.equal(intent.searchParams.get('url'), buildProjectShareUrl(DEFAULT_PUBLIC_SHARE_BASE, pool, source));
+      assert.equal(intent.searchParams.get('url'), makeArtworkShareUrl(buildProjectShareUrl(DEFAULT_PUBLIC_SHARE_BASE, pool, source)));
       assert.equal([...intent.searchParams].length, 2);
     }
     assert.ok(share.text.includes('TapeOut #16210'));
@@ -62,16 +65,16 @@ test('share intents encode bilingual text and the project URL without parameter 
 
 test('share slogans stay stable and rotate only through the selected safe variants', () => {
   const expected = ['一份也是矿友，一起才有意思。', '把朋友叫上，把矿机拼上。', '一起拼矿，一起发光。'];
-  for (let mottoIndex = 0; mottoIndex < 3; mottoIndex++) {
-    assert.equal(model({ mottoIndex }).motto, expected[mottoIndex]);
+  for (let mottoIndex = 0; mottoIndex < SHARE_MOTTO_COUNT; mottoIndex++) {
+    assert.equal(model({ mottoIndex }).motto, shareMotto('zh', mottoIndex, true));
     assert.equal(model({ mottoIndex }).text, model({ mottoIndex }).text);
-    assert.notEqual(model({ mottoIndex, locale: 'en' }).motto, expected[mottoIndex]);
+    assert.notEqual(model({ mottoIndex, locale: 'en' }).motto, shareMotto('zh', mottoIndex, true));
   }
-  assert.equal(model({ mottoIndex: 3 }).motto, expected[0]);
+  assert.equal(model({ mottoIndex: SHARE_MOTTO_COUNT }).motto, expected[0]);
   assert.equal(model({ mottoIndex: -1 }).motto, expected[0]);
   assert.doesNotMatch(model().text, /共持 BEM|共享 BEM/u);
   for (const state of ['Funded', 'Active', 'Listed', 'Closed', 'Refunding', 'Unknown']) {
-    for (let mottoIndex = 0; mottoIndex < 3; mottoIndex++) {
+    for (let mottoIndex = 0; mottoIndex < SHARE_MOTTO_COUNT; mottoIndex++) {
       const share = model({ mottoIndex, project: { ...project, state } });
       assert.ok(!expected.includes(share.motto));
       assert.doesNotMatch(share.xText, /剩余|份额可认购|available/u);
@@ -88,11 +91,27 @@ test('X copy remains within weighted 280-character limit including its shortened
     return sum + (cp <= 0x10ff || cp >= 0x2000 && cp <= 0x200d || cp >= 0x2010 && cp <= 0x201f || cp >= 0x2032 && cp <= 0x2037 ? 1 : 2);
   }, 0);
   for (const locale of ['zh', 'en']) for (const name of ['TapeOut', 'Behemoth']) {
-    for (const state of ['Funding', 'Active', 'Unknown']) for (let mottoIndex = 0; mottoIndex < 3; mottoIndex++) {
+    for (const state of ['Funding', 'Active', 'Unknown']) for (let mottoIndex = 0; mottoIndex < SHARE_MOTTO_COUNT; mottoIndex++) {
       const share = model({ locale, mottoIndex, project: { ...project, name, state, circuitId: (2n ** 256n - 1n).toString() } });
       assert.ok(weighted(share.xText) + 1 + 23 <= 280, `${locale}/${name}/${state}/${mottoIndex}`);
     }
   }
+});
+
+test('selected poster matches all share landing URLs while projectUrl remains a direct link', () => {
+  for (const artwork of SHARE_ARTWORKS) {
+    const share = model({ posterId: artwork.id });
+    assert.equal(share.projectUrl, buildProjectShareUrl(DEFAULT_PUBLIC_SHARE_BASE, pool));
+    assert.equal(share.url, makeArtworkShareUrl(share.projectUrl, artwork.id));
+    assert.equal(new URL(share.url).pathname, `/bemine/share/${artwork.id}.html`);
+    for (const key of ['telegramUrl', 'xUrl']) {
+      const target = new URL(new URL(share[key]).searchParams.get('url'));
+      assert.equal(target.pathname, `/bemine/share/${artwork.id}.html`);
+      assert.equal(target.searchParams.get('project'), pool);
+      assert.equal(target.searchParams.get('mode'), 'live');
+    }
+  }
+  assert.equal(new URL(model({ posterId: '../evil' }).url).pathname, '/bemine/share/original.html');
 });
 
 test('share payload never includes wallet, investment, receipt hash or untrusted optional metadata', () => {
