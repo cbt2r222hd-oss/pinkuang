@@ -1,10 +1,19 @@
 import { Interface, getAddress, ZeroAddress, toQuantity } from 'ethers';
 import { abi, uint, checkedPoolCreation, readPoolSnapshot } from './chain-client.mjs';
-import { loadOperatorQuote, readMachineRegistry } from './operator-quotes.mjs';
+import { loadOperatorQuote, readMachineRegistry, readOfficialMinerOnchain } from './operator-quotes.mjs';
 import { decodeFirstoOrder, verifyFirstoSignedAsk } from '../../deploy/src/firsto-purchase.mjs';
 
 const need = (value, message) => { if (!value) throw new Error(message); };
 const same = (a, b) => getAddress(a) === getAddress(b);
+
+/** An unchanged listing ID can still be repriced before the wallet confirmation. */
+export function sameAdminPurchasePreview(previous, current) {
+  if (!previous?.official && !current?.official) return true;
+  return !!previous.official && !!current.official
+    && previous.official.id === current.official.id
+    && previous.official.priceWei === current.official.priceWei
+    && same(previous.official.seller, current.official.seller);
+}
 export const OFFICIAL_COLLECTIONS = Object.freeze([
   '0xb1024b89886B9a34Aa4ff5F31C411D708b20a14C',
   '0x1F5Cb4aeaE1807Bf60c3b9C0D8aDBCC14e91f12C',
@@ -51,7 +60,8 @@ export async function prepareAdminAction(input) {
   const { provider, config, account, kind, params = {}, flexible, expectedTaskId, expectedReferenceWeight, pool, listingId, miningAction, firstoOrder } = input;
   const ctx = await context(provider, config, account), { from, factory, request, call, tag, status } = ctx;
   need(status.isOperator, '仅当前运营钱包可操作。');
-  let transaction, normalizedParams, frozenFirstoOrder, details = {}, requestKind = kind;
+  let transaction, normalizedParams, frozenFirstoOrder, details = {}, resolvedKind = kind;
+  let selectedListingId = listingId;
   const tx = (to, contract, name, args) => Object.freeze({ chainId: '0x38', from, to,
     data: contract.encodeFunctionData(name, args), value: '0x0' });
   if (kind === 'createPool' || kind === 'createFlexiblePoolChecked') {
@@ -78,30 +88,44 @@ export async function prepareAdminAction(input) {
     const target = addr(pool), snap = await readPoolSnapshot(provider, { factory, account: from, pools: [target], blockNumber: status.blockNumber });
     const row = snap.pools[0];
     need(row?.trusted && same(row.pool, target) && same(snap.lens, configured(config, 'lens')) && snap.blockHash === status.blockHash, '矿池身份或读取区块不一致。');
-    if (kind === 'buyFromFirsto') {
+    if (kind === 'autoPurchase' || kind === 'buyFromFirsto') {
       need(row.state === 1n && row.params && status.timestamp < row.params.purchaseDeadline, '矿池未募满或购机期限已过。');
-      const registry = await readMachineRegistry(provider, { factory, collection: row.params.circuits, tokenId: row.params.circuitId, blockTag: tag });
-      need(registry.supported && registry.ready, '当前工厂版本尚未开放 Firsto 采购，或矿机唯一性登记未完成。');
-      need(same(registry.pool, target), `矿机登记不属于此矿池，当前登记项目：${registry.pool}。`);
-      let order;
-      if (firstoOrder !== undefined) {
-        // Reconfirmation verifies the frozen bytes, never replaces them with a different market order.
-        order = decodeFirstoOrder(firstoOrder);
-        need(same(order.ask.collection, row.params.circuits) && BigInt(order.ask.tokenId) === row.params.circuitId,
-          'Firsto 订单不是矿池原目标矿机。');
-        order = await verifyFirstoSignedAsk(provider, order, { blockTag: tag });
+      const frozenOrder = firstoOrder === undefined ? null : decodeFirstoOrder(firstoOrder);
+      if (frozenOrder) need(same(frozenOrder.ask.collection, row.params.circuits)
+        && BigInt(frozenOrder.ask.tokenId) === row.params.circuitId, 'Firsto 订单不是矿池原目标矿机。');
+      const officialCheck = await readOfficialMinerOnchain(provider, row.params.circuits, row.params.circuitId,
+        { config, blockTag: tag });
+      need(officialCheck.blockHash === status.blockHash, '官网矿机核对区块不一致。');
+      const official = officialCheck.official && BigInt(officialCheck.official.priceWei) <= row.params.priceCap
+        && BigInt(officialCheck.official.priceWei) <= row.totalRaised ? officialCheck.official : null;
+      if (official) {
+        need(kind !== 'buyFromFirsto', '官网原目标仍有符合价格上限的挂单，请先从官网采购。');
+        resolvedKind = 'buyFromMarket'; selectedListingId = official.id;
+        transaction = tx(target, abi.PoolVault, resolvedKind, [uint(official.id)]);
+        details = { official, procurementRoute: 'official' };
       } else {
-        const checked = await loadOperatorQuote({ collection: row.params.circuits, tokenId: row.params.circuitId.toString(), config, provider, blockTag: tag });
-        need(checked.chain.blockHash === status.blockHash, 'Firsto 报价核对区块不一致。');
-        need(checked.chain.firsto, checked.chain.firstoError || '原目标暂无可执行的 Firsto 单笔签名挂单。');
-        order = checked.chain.firsto;
+        const registry = officialCheck.registry;
+        need(registry.supported && registry.ready, '当前工厂版本尚未开放 Firsto 采购，或矿机唯一性登记未完成。');
+        need(same(registry.pool, target), `矿机登记不属于此矿池，当前登记项目：${registry.pool}。`);
+        let order;
+        if (frozenOrder) {
+          // Reconfirmation verifies the frozen bytes, never replaces them with a different market order.
+          order = await verifyFirstoSignedAsk(provider, frozenOrder, { blockTag: tag });
+        } else {
+          const checked = await loadOperatorQuote({ collection: row.params.circuits, tokenId: row.params.circuitId.toString(),
+            config, provider, blockTag: tag, mode: 'createPool', officialPriceCapWei: row.params.priceCap.toString() });
+          need(checked.chain.blockHash === status.blockHash, 'Firsto 报价核对区块不一致。');
+          need(checked.chain.firsto, checked.chain.firstoError || '原目标暂无可执行的 Firsto 单笔签名挂单。');
+          order = checked.chain.firsto;
+        }
+        need(order.checkedBlock.hash === status.blockHash, 'Firsto 订单核对区块不一致。');
+        need(BigInt(order.grossWei) <= row.params.priceCap && BigInt(order.grossWei) <= row.totalRaised,
+          'Firsto 含来源手续费的总价超过矿池购机上限或募集金额。');
+        frozenFirstoOrder = order.encodedOrder;
+        resolvedKind = 'buyFromFirsto';
+        transaction = tx(target, abi.PoolVault, resolvedKind, [0, frozenFirstoOrder]);
+        details = { firsto: order, procurementRoute: 'firsto' };
       }
-      need(order.checkedBlock.hash === status.blockHash, 'Firsto 订单核对区块不一致。');
-      need(BigInt(order.grossWei) <= row.params.priceCap && BigInt(order.grossWei) <= row.totalRaised,
-        'Firsto 含来源手续费的总价超过矿池购机上限或募集金额。');
-      frozenFirstoOrder = order.encodedOrder;
-      transaction = tx(target, abi.PoolVault, 'buyFromFirsto', [0, frozenFirstoOrder]);
-      details = { firsto: order };
     } else if (kind === 'buyFromMarket' || kind === 'buyAlternativeFromMarket') {
       need(row.state === 1n && row.params && status.timestamp < row.params.purchaseDeadline, '矿池未募满或购机期限已过。');
       transaction = tx(target, abi.PoolVault, kind, [uint(listingId)]);
@@ -122,8 +146,9 @@ export async function prepareAdminAction(input) {
   const parsed = contract.parseTransaction(transaction);
   const result = contract.decodeFunctionResult(parsed.fragment, await request('eth_call', [unsigned, tag]));
   await ctx.verify();
-  return Object.freeze({ transaction, kind, requestKind, ...details,
+  return Object.freeze({ transaction, kind: resolvedKind, requestKind: resolvedKind, ...details,
     predictedPool: normalizedParams ? result[0] : undefined,
-    request: Object.freeze({ kind, params: normalizedParams, flexible, expectedTaskId, expectedReferenceWeight, pool, listingId, miningAction, firstoOrder: frozenFirstoOrder }),
+    request: Object.freeze({ kind, params: normalizedParams, flexible, expectedTaskId, expectedReferenceWeight, pool,
+      listingId: selectedListingId, miningAction, firstoOrder: frozenFirstoOrder }),
     checkedBlock: Object.freeze({ blockNumber: status.blockNumber, blockHash: status.blockHash, timestamp: status.timestamp }) });
 }

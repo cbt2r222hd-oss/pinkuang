@@ -15,7 +15,8 @@ export async function operatorFirstoFixture(options = {}) {
   data.page.rows = [data.row]; data.detail.asset = structuredClone(data.row);
   data.detail.orders.signedAsks = [{ askHash: source.id, maker: source.account, status: 'open', priceWei: source.priceWei, buyerCostWei: source.buyerCostWei }];
   data.quote = verifyQuoteDetail(parseQuotePage(data.page).rows[0], data.detail);
-  const legacy = chainFixture(data.quote, { owner: source.account, listing: { valid: false } });
+  const officialMarket = chainFixture(data.quote, { owner: source.account,
+    listing: { valid: options.officialListing === true, seller: source.account, price: 4000000000000000n } });
   const live = createLiveBrowserFixture({ isOperator: true, timestamp: now / 1000 });
   const row = live.rows[0];
   Object.assign(row, { state: 1n, totalRaised: 20000000000000000n, totalSupply: 100n });
@@ -39,17 +40,17 @@ export async function operatorFirstoFixture(options = {}) {
           : machineRegistryAbi.encodeFunctionResult(parsed.fragment, [true, state.ready, state.ready ? 0n : 0n, state.ready ? 0n : 1n]);
         if (parsed?.name === 'machinePool') return machineRegistryAbi.encodeFunctionResult(parsed.fragment, [state.registryPool]);
       }
-      if (target === MARKET || target === MINING) return legacy.provider.request(input);
+      if (target === MARKET || target === MINING) return officialMarket.provider.request(input);
       if (target === getAddress(source.execution.collection) || target === FIRSTO_SIGNED_EXCHANGE) return firsto.provider.request(input);
       if (target === FIXTURE_POOLS.funding) {
         const parsed = abi.PoolVault.parseTransaction(tx);
-        if (parsed?.name === 'buyFromFirsto') {
+        if (parsed?.name === 'buyFromFirsto' || parsed?.name === 'buyFromMarket') {
           simulations.push(input); return abi.PoolVault.encodeFunctionResult(parsed.fragment, []);
         }
       }
     }
     return live.request(input);
   } };
-  return { ...live, provider, data, source, api, state, calls, simulations,
+  return { ...live, provider, data, source, api, state, calls, simulations, officialMarket,
     config: { status: 'ready', chainId: 56, ...FIXTURE_CONTRACTS }, pool: FIXTURE_POOLS.funding };
 }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ZeroAddress } from 'ethers';
 import { abi } from '../lib/chain-client.mjs';
-import { prepareAdminAction, readOperatorStatus } from '../lib/live-admin.mjs';
+import { prepareAdminAction, readOperatorStatus, sameAdminPurchasePreview } from '../lib/live-admin.mjs';
 import { loadOperatorQuote, operatorQuoteDraft, readMachineRegistry } from '../lib/operator-quotes.mjs';
 import { operatorFirstoFixture } from './operator-firsto-fixture.mjs';
 
@@ -82,6 +82,39 @@ test('pool automatically discovers original Firsto order; preview freezes bytes 
   f.state.cancelled = true;
   await assert.rejects(prepareAdminAction({ provider: f.provider, config: f.config, account: f.account, ...preview.request }), /撤销/);
   assert.equal(f.api.requests.length, requests); assert.equal(f.simulations.length, 2);
+});
+
+test('automatic purchase takes the official listing first without reading Firsto, even when Firsto is unavailable', async t => {
+  const f = await operatorFirstoFixture({ officialListing: true }); f.state.registryPool = f.pool;
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('Firsto unavailable'); });
+  const preview = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
+    kind: 'autoPurchase', pool: f.pool });
+  const parsed = abi.PoolVault.parseTransaction(preview.transaction);
+  assert.equal(parsed.name, 'buyFromMarket'); assert.equal(parsed.args[0], 45n);
+  assert.equal(preview.kind, 'buyFromMarket'); assert.equal(preview.official.priceWei, '4000000000000000');
+  assert.equal(f.api.requests.length, 0); assert.equal(f.simulations.length, 1);
+  const unchanged = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account, ...preview.request });
+  assert.equal(sameAdminPurchasePreview(preview, unchanged), true);
+  f.officialMarket.listing.price = 4500000000000000n;
+  const repriced = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account, ...preview.request });
+  assert.equal(repriced.transaction.data, preview.transaction.data, 'listing ID and calldata stay the same');
+  assert.equal(sameAdminPurchasePreview(preview, repriced), false, 'wallet confirmation must require a new price preview');
+  f.officialMarket.listing.price = 4000000000000000n;
+  f.state.registryPool = ZeroAddress;
+  const checked = await loadOperatorQuote({ collection: f.data.quote.collection, tokenId: '7', config: f.config,
+    provider: f.provider, fetcher: async () => { throw new Error('Firsto unavailable'); } });
+  assert.equal(checked.quote, null); assert.equal(operatorQuoteDraft(checked).params.priceCapWei, '4000000000000000');
+});
+
+test('automatic purchase checks the official price cap before falling back to a verified Firsto order', async t => {
+  const f = await operatorFirstoFixture({ officialListing: true }); f.state.registryPool = f.pool;
+  f.officialMarket.listing.price = 20000000000000000n; // Valid but above this pool's approved cap.
+  t.mock.method(globalThis, 'fetch', f.api.fetcher);
+  const preview = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
+    kind: 'autoPurchase', pool: f.pool });
+  assert.equal(preview.kind, 'buyFromFirsto'); assert(preview.firsto);
+  assert(f.api.requests.length > 0); assert.equal(f.simulations.length, 1);
+  assert.equal(abi.PoolVault.parseTransaction(preview.transaction).name, 'buyFromFirsto');
 });
 
 test('fee-inclusive cap, target identity and pool registration are checked before Firsto simulation', async t => {
