@@ -10,7 +10,6 @@ import { createLiveApi } from './live-api.mjs';
 const addr = number => getAddress(`0x${number.toString(16).padStart(40, '0')}`);
 const factory = addr(1), lens = addr(2), market = addr(3), pool = addr(4), beacon = addr(5), timelock = addr(6);
 const poolFactoryImpl = addr(7), marketImpl = addr(8), poolVaultImpl = addr(9);
-const collection = '0xb1024b89886B9a34Aa4ff5F31C411D708b20a14C';
 const beaconAbi = new Interface(['function implementation() view returns(address)', 'function owner() view returns(address)']);
 const origin = 'http://127.0.0.1:3000';
 const hexHash = value => `0x${value.toString(16).padStart(64, '0')}`;
@@ -19,50 +18,30 @@ function rpc() {
   const transactions = new Map(), receipts = new Map();
   const orders = new Map();
   const proposals = new Map();
-  const blockHashes = new Map();
-  const activity = { chainReads: 0, codeReads: 0, blockReads: 0, calls: 0 };
   let nonce = 0, finalizedNumber = 0, chain = 56, timestamp = 1000, poolState = 2n;
-  let registered = true, flexible = true, referenceWeight = 100n, modelInitialized = true;
-  let poolCollection = collection, referenceCircuitId = 77n;
-  const calls = [];
   let salePrice = 10000n, saleExpiry = 1000100n, listedProposalId = 2n;
-  return { transactions, receipts, orders, proposals, calls, activity, setNonce(value) { nonce = value; },
+  return { transactions, receipts, orders, proposals, setNonce(value) { nonce = value; },
     setFinalized(value) { finalizedNumber = value; }, setChain(value) { chain = value; },
     setTimestamp(value) { timestamp = value; }, setPoolState(value) { poolState = value; },
-    setBlockHash(number, hash) { blockHashes.set(number, hash); },
-    setRegistered(value) { registered = value; },
-    setPurchase({ enabled = flexible, weight = referenceWeight, initialized = modelInitialized,
-      circuits = poolCollection, referenceId = referenceCircuitId } = {}) {
-      flexible = enabled; referenceWeight = weight; modelInitialized = initialized;
-      poolCollection = circuits; referenceCircuitId = referenceId;
-    },
     setSale({ price = salePrice, expiry = saleExpiry, proposalId = listedProposalId }) {
       salePrice = price; saleExpiry = expiry; listedProposalId = proposalId;
     },
-    async send(method) { activity.chainReads += 1; assert.equal(method, 'eth_chainId'); return `0x${chain.toString(16)}`; },
+    async send(method) { assert.equal(method, 'eth_chainId'); return `0x${chain.toString(16)}`; },
     async getNetwork() { return { chainId: 56n }; },
-    async getCode() { activity.codeReads += 1; return '0x6000'; },
+    async getCode() { return '0x6000'; },
     async getStorage(target) { return `0x${(target === factory ? poolFactoryImpl : marketImpl).slice(2).padStart(64, '0')}`; },
     async getTransactionCount() { return nonce; },
     async getTransaction(hash) { return transactions.get(hash) ?? null; },
     async getTransactionReceipt(hash) { return receipts.get(hash) ?? null; },
-    async getBlock(tag) { activity.blockReads += 1; return tag === 'finalized' ? { number: finalizedNumber, hash: hexHash(finalizedNumber) }
+    async getBlock(tag) { return tag === 'finalized' ? { number: finalizedNumber, hash: hexHash(finalizedNumber) }
       : tag === 'latest' ? { number: 10, hash: hexHash(10), timestamp }
-        : { number: tag, hash: blockHashes.get(tag) ?? hexHash(tag), timestamp }; },
+        : { number: tag, hash: hexHash(tag), timestamp }; },
     async estimateGas() { return 100000n; },
     async call(tx) {
-      activity.calls += 1;
       const contract = tx.to === factory ? abi.PoolFactory : tx.to === lens ? abi.PoolLens
         : tx.to === market ? abi.ShareMarket : tx.to === beacon ? beaconAbi : abi.PoolVault;
       const parsed = contract.parseTransaction(tx);
       if (!parsed) throw new Error('Unknown call.');
-      calls.push({ name: parsed.name, blockTag: tx.blockTag });
-      if (parsed.name === 'params') return contract.encodeFunctionResult(parsed.name,
-        [[poolCollection, 77n, 1100n, 1000n, addr(0), 0n, 900n, 2000n]]);
-      if (parsed.name === 'flexiblePurchase') return contract.encodeFunctionResult(parsed.name,
-        [flexible, referenceCircuitId, [50n, 1000n, 10n, 1000n, 900n, 9n, hexHash(1)]]);
-      if (parsed.name === 'purchaseModel') return contract.encodeFunctionResult(parsed.name, [modelInitialized, 42n]);
-      if (parsed.name === 'purchaseReferenceWeight') return contract.encodeFunctionResult(parsed.name, [referenceWeight]);
       if (parsed.name === 'orders') {
         const order = orders.get(parsed.args[0].toString()) ?? { seller: addr(99), pool, remaining: 0n, pricePerUnit: 0n, active: false };
         return contract.encodeFunctionResult(parsed.name, [[order.seller, order.pool, order.remaining, order.pricePerUnit, order.active]]);
@@ -76,7 +55,7 @@ function rpc() {
           proposal.endsAt, proposal.refAt, proposal.price, proposal.refPrice, proposal.snapshotMemberCount,
           proposal.snapshotTotalShares, proposal.yesCount, proposal.yesShares, proposal.executed]]);
       }
-      const value = { lens, shareMarket: market, beacon, timelock, isPool: registered, factory, VERSION: 1n,
+      const value = { lens, shareMarket: market, beacon, timelock, isPool: true, factory, VERSION: 1n,
         unitPriceWei: 100n, implementation: poolVaultImpl, owner: timelock, OFFICIAL_FACTORY: factory,
         feeBps: 100n, nextOrderId: 100n, bnbOwed: 500n, state: poolState, shareTradingAllowed: true,
         availableShares: 100n, lockedShares: 100n, balanceOf: 100n, activatedAt: 1n,
@@ -88,8 +67,7 @@ function rpc() {
   };
 }
 
-async function fixture({ badHash = false, now = Date.now, discoverOfficial = async (_provider, options) =>
-  ({ complete: true, chainBlock: options.blockNumber, candidates: [] }) } = {}) {
+async function fixture({ badHash = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'bemine-live-test-'));
   const provider = rpc();
   const code = Object.fromEntries(Object.entries({ factory, shareMarket: market, lens, beacon, timelock,
@@ -98,7 +76,7 @@ async function fixture({ badHash = false, now = Date.now, discoverOfficial = asy
   if (badHash) code.PoolVault.hash = hexHash(999);
   const config = { factory, expected: { artifactDigest: ARTIFACT_DIGEST, code }, origin,
     rpc: 'https://example.invalid', index: 'https://example.invalid', dbPath: join(directory, 'private', 'live.sqlite') };
-  const options = { provider, discoverOfficial, now, onError: error => console.error(error), fetchImpl: async () => ({ ok: true, async json() { return { source: { complete: true, chainId: 56, factory, market }, data: { items: [] } }; } }) };
+  const options = { provider, onError: error => console.error(error), fetchImpl: async () => ({ ok: true, async json() { return { source: { complete: true, chainId: 56, factory, market }, data: { items: [] } }; } }) };
   let service = createLiveApi(config, options);
   await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
   let base = `http://127.0.0.1:${service.server.address().port}`;
@@ -382,181 +360,5 @@ test('whole-miner completion requires exact sale BNB; expiry unlock is a separat
     const cancel = await f.request('/intent', 'POST', { ...base,
       data: abi.PoolVault.encodeFunctionData('cancelExpired'), value: '0' }, cookie, buyer.address);
     assert.equal(cancel.status, 201); assert.equal(cancel.body.intent.action, 'governance:cancelExpired');
-  } finally { await f.close(); }
-});
-
-const officialPath = (number = 10) => `/official-candidates?pool=${pool}&block=${number}&hash=${hexHash(number)}`;
-
-test('public official candidates use the registered Funded pool model at the requested BSC block and coalesce a short cache', async () => {
-  let scanned = 0;
-  const f = await fixture({ discoverOfficial: async (_provider, options, constraints) => {
-    scanned += 1;
-    assert.equal(options.blockNumber, 10);
-    assert.equal(constraints.circuits, collection);
-    assert.equal(constraints.taskId, 42n);
-    assert.equal(constraints.referenceVerifiedWeight, 100n);
-    assert.equal(constraints.minVerifiedWeight, 50n);
-    assert.equal(constraints.referencePriceWei, 1000n);
-    assert.equal(constraints.priceCap, 1000n);
-    return { complete: true, chainBlock: 10, candidates: [{ listingId: 8n, collection,
-      tokenId: 78n, seller: addr(90), priceWei: 700n, verifiedWeight: 80n }] };
-  } });
-  try {
-    f.provider.setPoolState(1n);
-    const first = await f.request(officialPath());
-    assert.equal(first.status, 200);
-    assert.deepEqual(first.body, {
-      complete: true, chainId: 56, factory, artifactDigest: ARTIFACT_DIGEST,
-      pool, blockNumber: '10', blockHash: hexHash(10), flexible: true,
-      model: { circuits: collection, taskId: '42', minVerifiedWeight: '50',
-        referenceVerifiedWeight: '100', referencePriceWei: '1000', priceCap: '1000' },
-      candidates: [{ listingId: '8', collection, tokenId: '78', seller: addr(90),
-        priceWei: '700', verifiedWeight: '80' }],
-    });
-    assert.equal((await f.request(officialPath())).status, 200);
-    assert.equal(scanned, 1);
-    for (const name of ['isPool', 'factory', 'OFFICIAL_FACTORY', 'state', 'params',
-      'flexiblePurchase', 'purchaseModel', 'purchaseReferenceWeight']) {
-      assert.ok(f.provider.calls.some(call => call.name === name && call.blockTag === 10), `${name} must be pinned`);
-    }
-  } finally { await f.close(); }
-});
-
-test('official candidate query fails closed on invalid identity, registry, block and purchase window', async () => {
-  const f = await fixture();
-  try {
-    f.provider.setPoolState(1n);
-    for (const path of [
-      '/official-candidates', `${officialPath()}&extra=1`,
-      `/official-candidates?pool=${pool}&block=010&hash=${hexHash(10)}`,
-      `/official-candidates?pool=${pool}&block=10&hash=0x01`,
-    ]) assert.equal((await f.request(path)).status, 400);
-    assert.equal((await f.request(`/official-candidates?pool=${pool}&block=10&hash=${hexHash(11)}`)).status, 409);
-    f.provider.setRegistered(false);
-    assert.equal((await f.request(officialPath())).status, 400);
-    f.provider.setRegistered(true);
-    f.provider.setChain(97);
-    assert.equal((await f.request(officialPath())).status, 503);
-    f.provider.setChain(56);
-    f.provider.setPoolState(2n);
-    assert.equal((await f.request(officialPath())).status, 409);
-    f.provider.setPoolState(1n); f.provider.setTimestamp(2000);
-    assert.equal((await f.request(officialPath())).status, 409);
-    f.provider.setTimestamp(1000); f.provider.setPurchase({ weight: 0n });
-    assert.equal((await f.request(officialPath())).status, 503);
-  } finally { await f.close(); }
-});
-
-test('fixed pool gives a complete empty official-alternative set without contacting the external snapshot', async () => {
-  let scans = 0;
-  const f = await fixture({ discoverOfficial: async () => { scans += 1; throw Error('must not scan'); } });
-  try {
-    f.provider.setPoolState(1n);
-    f.provider.setPurchase({ enabled: false });
-    const result = await f.request(officialPath());
-    assert.equal(result.status, 200);
-    assert.equal(result.body.complete, true);
-    assert.equal(result.body.flexible, false);
-    assert.equal(result.body.model, null);
-    assert.deepEqual(result.body.candidates, []);
-    assert.equal(scans, 0);
-  } finally { await f.close(); }
-});
-
-test('flexible preview refuses a detached reference miner or non-official collection before discovery', async () => {
-  let scans = 0;
-  const f = await fixture({ discoverOfficial: async () => { scans += 1; throw Error('must not scan'); } });
-  try {
-    f.provider.setPoolState(1n);
-    f.provider.setPurchase({ referenceId: 78n });
-    assert.equal((await f.request(officialPath())).status, 503);
-    f.provider.setPurchase({ referenceId: 77n, circuits: addr(90) });
-    assert.equal((await f.request(officialPath())).status, 503);
-    assert.equal(scans, 0);
-  } finally { await f.close(); }
-});
-
-test('incomplete or failed discovery returns 503, never a verified empty market', async () => {
-  let behavior = 'reject';
-  const f = await fixture({ discoverOfficial: async (_provider, options) => {
-    if (behavior === 'reject') throw Error('snapshot offline');
-    if (behavior === 'incomplete') return { complete: false, chainBlock: options.blockNumber, candidates: [] };
-    return { complete: true, chainBlock: options.blockNumber, candidates: [] };
-  } });
-  try {
-    f.provider.setPoolState(1n);
-    assert.equal((await f.request(officialPath())).status, 503);
-    behavior = 'incomplete';
-    assert.equal((await f.request(officialPath())).status, 503);
-    behavior = 'complete';
-    const result = await f.request(officialPath());
-    assert.equal(result.status, 200);
-    assert.equal(result.body.complete, true);
-    assert.deepEqual(result.body.candidates, []);
-  } finally { await f.close(); }
-});
-
-test('only two distinct official scans run at once and same-block callers share one scan', async () => {
-  let started = 0;
-  const releases = [];
-  const f = await fixture({ discoverOfficial: (_provider, options) => new Promise(resolve => {
-    started += 1;
-    releases.push(() => resolve({ complete: true, chainBlock: options.blockNumber, candidates: [] }));
-  }) });
-  try {
-    f.provider.setPoolState(1n);
-    const first = f.request(officialPath(10));
-    for (let i = 0; started < 1 && i < 100; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal(started, 1);
-    const shared = f.request(officialPath(10));
-    const second = f.request(officialPath(11));
-    for (let i = 0; started < 2 && i < 100; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal(started, 2);
-    assert.equal((await f.request(officialPath(12))).status, 503);
-    assert.equal(started, 2);
-    releases.forEach(release => release());
-    assert.equal((await first).status, 200);
-    assert.equal((await shared).status, 200);
-    assert.equal((await second).status, 200);
-  } finally { await f.close(); }
-});
-
-test('a block reorganization during discovery cannot be cached as a complete official scan', async () => {
-  let scanned = 0, release;
-  const f = await fixture({ discoverOfficial: (_provider, options) => {
-    scanned += 1;
-    if (scanned > 1) return { complete: true, chainBlock: options.blockNumber, candidates: [] };
-    return new Promise(resolve => { release = () => resolve({ complete: true, chainBlock: options.blockNumber, candidates: [] }); });
-  } });
-  try {
-    f.provider.setPoolState(1n);
-    const first = f.request(officialPath());
-    for (let i = 0; !release && i < 100; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-    assert.equal(typeof release, 'function');
-    f.provider.setBlockHash(10, hexHash(99));
-    release();
-    assert.equal((await first).status, 409);
-    f.provider.setBlockHash(10, hexHash(10));
-    assert.equal((await f.request(officialPath())).status, 200);
-    assert.equal(scanned, 2);
-  } finally { await f.close(); }
-});
-
-test('anonymous official previews are rate-limited before deployment identity or pool RPC', async () => {
-  let time = 100_000, scans = 0;
-  const f = await fixture({ now: () => time, discoverOfficial: async (_provider, options) => {
-    scans += 1;
-    return { complete: true, chainBlock: options.blockNumber, candidates: [] };
-  } });
-  try {
-    f.provider.setPoolState(1n);
-    for (let i = 0; i < 6; i += 1) assert.equal((await f.request(officialPath())).status, 200);
-    assert.equal(scans, 1, 'short cache still prevents repeated snapshot scans');
-    const rpcCalls = { ...f.provider.activity };
-    assert.equal((await f.request(officialPath())).status, 429);
-    assert.deepEqual(f.provider.activity, rpcCalls, 'rejected request must not reach any chain RPC');
-    time += 500;
-    assert.equal((await f.request(officialPath())).status, 200);
-    assert.equal(scans, 1);
   } finally { await f.close(); }
 });

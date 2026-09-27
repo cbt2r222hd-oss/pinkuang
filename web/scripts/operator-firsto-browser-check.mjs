@@ -12,7 +12,7 @@ assert(['127.0.0.1', 'localhost'].includes(new URL(base).hostname));
 const output = process.env.BEMINE_BROWSER_OUTPUT || join(tmpdir(), 'bemine-firsto-check');
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true, ...(process.env.BEMINE_TEST_BROWSER ? { channel: process.env.BEMINE_TEST_BROWSER } : {}) });
-const errors = [], checks = [], forbidden = [];
+const errors = [], checks = [], forbidden = [], officialCandidateRequests = [];
 const json = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v);
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1080 } });
@@ -26,7 +26,8 @@ try {
     else if (url.pathname.includes('/firsto-api/')) {
       const response = await f.api.fetcher(request.url(), { method: request.method(), credentials: 'omit' });
       return route.fulfill({ status: response.status, contentType: 'application/json', body: await response.text() });
-    } else if (url.pathname.endsWith('/api/live/official-candidates')) {
+    } else if (url.pathname.endsWith('/api/journal/official-candidates')) {
+      officialCandidateRequests.push(url.pathname);
       result = { complete: true, chainId: 56, factory: f.config.factory, artifactDigest: ARTIFACT_DIGEST,
         pool: f.pool, blockNumber: '100', blockHash: `0x${'12'.repeat(32)}`, flexible: true,
         model: { circuits: f.data.quote.collection, taskId: '220', minVerifiedWeight: '50',
@@ -88,6 +89,7 @@ try {
   const alternativeText = await modal.innerText();
   assert.match(alternativeText, /TapeOut #8/); assert.match(alternativeText, /验证产能权重\s*61/);
   assert.match(alternativeText, /官网预览价未锁定/); assert.match(alternativeText, /仅 Gas/);
+  assert(officialCandidateRequests.includes(`${new URL(base).pathname.replace(/\/$/, '')}/api/journal/official-candidates`));
   await page.screenshot({ path: join(output, 'official-alternative-preview.png'), fullPage: true, animations: 'disabled' });
   checks.push('flexible pool discovers and simulates an official same-task replacement before Firsto, with miner identity and price warning');
   await modal.getByRole('button', { name: '返回修改', exact: true }).click();

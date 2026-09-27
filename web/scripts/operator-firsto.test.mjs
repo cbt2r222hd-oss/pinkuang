@@ -21,7 +21,7 @@ const alternative = f => ({ listingId: '46', collection: f.data.quote.collection
   seller: f.source.account, priceWei: '4000000000000000', verifiedWeight: '61' });
 function marketFetcher(f, marketResponse, { firsto = true } = {}) {
   return async (input, init) => {
-    if (new URL(input, 'https://local.example').pathname.endsWith('/api/live/official-candidates')) {
+    if (new URL(input, 'https://local.example').pathname.endsWith('/api/journal/official-candidates')) {
       return new Response(JSON.stringify(marketResponse), { headers: { 'Content-Type': 'application/json' } });
     }
     if (!firsto) throw new Error('Firsto must not be read while an official purchase is executable.');
@@ -110,6 +110,7 @@ test('automatic purchase takes the official listing first without reading Firsto
   const parsed = abi.PoolVault.parseTransaction(preview.transaction);
   assert.equal(parsed.name, 'buyFromMarket'); assert.equal(parsed.args[0], 45n);
   assert.equal(preview.kind, 'buyFromMarket'); assert.equal(preview.official.priceWei, '4000000000000000');
+  assert.equal(preview.official.verifiedWeight, '61');
   assert.equal(f.api.requests.length, 0); assert.equal(f.simulations.length, 2);
   const unchanged = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account, ...preview.request });
   assert.equal(sameAdminPurchasePreview(preview, unchanged), true);
@@ -137,10 +138,11 @@ test('automatic purchase checks the official price cap before falling back to a 
 
 test('flexible pool scans official same-task replacements before Firsto and repeats that order before signing', async t => {
   const f = await operatorFirstoFixture({ flexible: true, alternativeListing: { valid: true, price: 4000000000000000n } });
+  f.config.journalBase = '/bemine/api/journal';
   f.state.registryPool = f.pool;
   const scans = []; const candidate = alternative(f);
   t.mock.method(globalThis, 'fetch', async (input, init) => {
-    if (new URL(input, 'https://local.example').pathname.endsWith('/api/live/official-candidates')) scans.push(input);
+    if (new URL(input, 'https://local.example').pathname.endsWith('/api/journal/official-candidates')) scans.push(input);
     return marketFetcher(f, officialCandidates(f, { candidates: [candidate] }), { firsto: false })(input, init);
   });
   const preview = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
@@ -149,6 +151,7 @@ test('flexible pool scans official same-task replacements before Firsto and repe
   assert.equal(preview.official.tokenId, '8'); assert.equal(preview.official.verifiedWeight, '61');
   assert.equal(abi.PoolVault.parseTransaction(preview.transaction).args[0], 46n);
   assert.equal(f.api.requests.length, 0); assert.equal(scans.length, 1);
+  assert.equal(new URL(scans[0], 'https://local.example').pathname, '/bemine/api/journal/official-candidates');
   await assert.rejects(prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
     kind: 'buyFromFirsto', pool: f.pool }), /官网市场仍有可执行/);
   const confirmed = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account, ...preview.request });
@@ -165,6 +168,22 @@ test('an original miner that has left mining does not block a valid official rep
   const preview = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
     kind: 'autoPurchase', pool: f.pool });
   assert.equal(preview.kind, 'buyAlternativeFromMarket'); assert.equal(preview.official.tokenId, '8');
+});
+
+test('an original official miner below the locked minimum weight yields to a qualified replacement', async t => {
+  const f = await operatorFirstoFixture({ flexible: true, officialListing: true,
+    originalMiner: { verifWeight: 40n }, alternativeListing: { valid: true, price: 4000000000000000n } });
+  f.state.registryPool = f.pool;
+  const candidate = { ...alternative(f), verifiedWeight: '80' };
+  t.mock.method(globalThis, 'fetch', marketFetcher(f, officialCandidates(f, { candidates: [candidate] }), { firsto: false }));
+  const preview = await prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
+    kind: 'autoPurchase', pool: f.pool });
+  assert.equal(preview.kind, 'buyAlternativeFromMarket');
+  assert.equal(preview.official.tokenId, '8');
+  assert.equal(preview.official.verifiedWeight, '80');
+  assert(f.simulations.length > 0 && f.simulations.every(call =>
+    abi.PoolVault.parseTransaction(call.params[0]).name === 'buyAlternativeFromMarket'),
+  'the ineligible original must not be simulated as a purchase');
 });
 
 test('a stale original seller hint cannot suppress another executable official miner', async t => {
@@ -206,12 +225,20 @@ test('complete empty official scan permits Firsto, while failed/incomplete scans
     kind: 'autoPurchase', pool: f.pool }), /扫描不完整/);
   assert.equal(f.api.requests.length, apiCount);
   mock.mock.mockImplementation(async input => {
-    if (new URL(input, 'https://local.example').pathname.endsWith('/api/live/official-candidates'))
+    if (new URL(input, 'https://local.example').pathname.endsWith('/api/journal/official-candidates'))
       return new Response(JSON.stringify({ error: 'unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
     throw new Error('Firsto must not be queried after official scan failure.');
   });
   await assert.rejects(prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
     kind: 'buyFromFirsto', pool: f.pool }), /503/);
+  assert.equal(f.api.requests.length, apiCount);
+  mock.mock.mockImplementation(async input => {
+    if (new URL(input, 'https://local.example').pathname.endsWith('/api/journal/official-candidates'))
+      return new Response(JSON.stringify({ error: 'busy' }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+    throw new Error('Firsto must not be queried after official scan throttling.');
+  });
+  await assert.rejects(prepareAdminAction({ provider: f.provider, config: f.config, account: f.account,
+    kind: 'autoPurchase', pool: f.pool }), /官网候选扫描繁忙，请稍后重试/);
   assert.equal(f.api.requests.length, apiCount);
 });
 

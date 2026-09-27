@@ -21,12 +21,12 @@ function officialCandidateRevert(error) {
     || /^execution reverted(?:\b|:)/i.test(String(error?.message ?? ''));
 }
 
-async function findOfficialAlternative({ request, config, pool, row, status, tag, tx }) {
-  const [selection, model, referenceWeight] = await Promise.all([
-    readVault(request, pool, 'flexiblePurchase', tag), readVault(request, pool, 'purchaseModel', tag),
-    readVault(request, pool, 'purchaseReferenceWeight', tag),
-  ]);
+async function readFlexiblePurchaseModel({ request, pool, row, tag }) {
+  const selection = await readVault(request, pool, 'flexiblePurchase', tag);
   if (!selection.enabled) return null; // Fixed pools may only buy their original NFT.
+  const [model, referenceWeight] = await Promise.all([
+    readVault(request, pool, 'purchaseModel', tag), readVault(request, pool, 'purchaseReferenceWeight', tag),
+  ]);
   need(selection.referenceCircuitId === row.params.circuitId && model.initialized && referenceWeight[0] > 0n,
     '矿池灵活购机模型未完成链上锁定。');
   const policy = selection.config;
@@ -35,9 +35,27 @@ async function findOfficialAlternative({ request, config, pool, row, status, tag
     referencePriceWei: policy.referencePriceWei.toString(), priceCap: row.params.priceCap.toString() };
   need(uint(expected.minVerifiedWeight) > 0n && uint(expected.referencePriceWei) > 0n,
     '矿池灵活购机约束无效。');
+  return expected;
+}
+
+function flexiblePriceLimit(model, verifiedWeight) {
+  const weight = uint(verifiedWeight), reference = uint(model.referenceVerifiedWeight);
+  return weight >= reference ? uint(model.referencePriceWei)
+    : uint(model.referencePriceWei) * weight / reference;
+}
+
+async function findOfficialAlternative({ request, config, pool, row, status, tag, tx, model: expected }) {
+  if (!expected) return null;
   const query = new URLSearchParams({ pool, block: status.blockNumber.toString(), hash: status.blockHash });
-  const result = await fetchLiveJson(`${config.basePath ?? ''}/api/live/official-candidates?${query}`,
-    { maxBytes: 512000, timeoutMs: 16000 });
+  const journalBase = (config.journalBase ?? `${config.basePath ?? ''}/api/journal`).replace(/\/$/, '');
+  let result;
+  try {
+    result = await fetchLiveJson(`${journalBase}/official-candidates?${query}`,
+      { maxBytes: 512000, timeoutMs: 40000 });
+  } catch (error) {
+    if (error?.details?.status === 429) throw new Error('官网候选扫描繁忙，请稍后重试。');
+    throw error;
+  }
   need(result?.complete === true && result.chainId === 56 && same(result.factory, config.factory ?? config.manifest?.factory)
     && result.artifactDigest?.toLowerCase() === ARTIFACT_DIGEST.toLowerCase()
     && (config.manifest?.artifactDigest === undefined || config.manifest.artifactDigest.toLowerCase() === ARTIFACT_DIGEST.toLowerCase())
@@ -55,9 +73,7 @@ async function findOfficialAlternative({ request, config, pool, row, status, tag
     need(same(hint.collection, expected.circuits) && listingId > 0n
       && priceWei > 0n && priceWei <= row.params.priceCap && priceWei <= row.totalRaised
       && verifiedWeight >= uint(expected.minVerifiedWeight)
-      && priceWei <= (verifiedWeight >= uint(expected.referenceVerifiedWeight)
-        ? uint(expected.referencePriceWei)
-        : uint(expected.referencePriceWei) * verifiedWeight / uint(expected.referenceVerifiedWeight))
+      && priceWei <= flexiblePriceLimit(expected, verifiedWeight)
       && !seen.has(tokenId.toString()), '官网候选身份、报价或权重无效。');
     if (tokenId === row.params.circuitId) continue; // The original was checked with NFT ownership above.
     seen.add(tokenId.toString());
@@ -178,8 +194,12 @@ export async function prepareAdminAction(input) {
       const officialCheck = await readOfficialMinerOnchain(provider, row.params.circuits, row.params.circuitId,
         { config, blockTag: tag, allowIneligible: true });
       need(officialCheck.blockHash === status.blockHash, '官网矿机核对区块不一致。');
+      const flexibleModel = await readFlexiblePurchaseModel({ request, pool: target, row, tag });
       let official = officialCheck.official && BigInt(officialCheck.official.priceWei) <= row.params.priceCap
         && BigInt(officialCheck.official.priceWei) <= row.totalRaised ? officialCheck.official : null;
+      if (official && flexibleModel && (officialCheck.taskId !== flexibleModel.taskId
+        || uint(officialCheck.verifiedWeight) < uint(flexibleModel.minVerifiedWeight)
+        || uint(official.priceWei) > flexiblePriceLimit(flexibleModel, officialCheck.verifiedWeight))) official = null;
       if (official) {
         const direct = tx(target, abi.PoolVault, 'buyFromMarket', [uint(official.id)]);
         const { chainId: _chainId, ...unsigned } = direct;
@@ -193,9 +213,10 @@ export async function prepareAdminAction(input) {
         need(kind !== 'buyFromFirsto', '官网原目标仍有符合价格上限的挂单，请先从官网采购。');
         resolvedKind = 'buyFromMarket'; selectedListingId = official.id;
         transaction = tx(target, abi.PoolVault, resolvedKind, [uint(official.id)]);
-        details = { official: { ...official, collection: row.params.circuits, tokenId: row.params.circuitId.toString() }, procurementRoute: 'official' };
+        details = { official: { ...official, collection: row.params.circuits, tokenId: row.params.circuitId.toString(),
+          verifiedWeight: officialCheck.verifiedWeight }, procurementRoute: 'official' };
       } else {
-        const alternative = await findOfficialAlternative({ request, config, pool: target, row, status, tag, tx });
+        const alternative = await findOfficialAlternative({ request, config, pool: target, row, status, tag, tx, model: flexibleModel });
         if (alternative) {
           need(kind !== 'buyFromFirsto', '官网市场仍有可执行的同任务替代矿机，请先从官网采购。');
           resolvedKind = 'buyAlternativeFromMarket'; selectedListingId = alternative.official.id;

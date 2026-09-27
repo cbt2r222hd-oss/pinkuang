@@ -18,6 +18,7 @@ const MINING_ABI = [
 ];
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 const need = (condition, reason) => { if (!condition) throw new Error(reason); };
+const live = signal => need(!signal?.aborted, 'Official market scan was aborted.');
 const natural = (value, name) => {
   need((typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value)) || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) || (typeof value === 'bigint' && value >= 0n), `Invalid ${name}.`);
   return BigInt(value);
@@ -107,7 +108,7 @@ function parseListing(row, constraints, maxId, allowOverCap = false) {
   return { key, collection, tokenId, listingId, seller, priceWei };
 }
 
-function defaultRead(provider, blockNumber) {
+function defaultRead(provider, blockNumber, signal) {
   const market = new Contract(OFFICIAL_MARKET, MARKET_ABI, provider);
   const mining = new Contract(OFFICIAL_MINING, MINING_ABI, provider);
   const opts = { blockTag: blockNumber };
@@ -118,7 +119,11 @@ function defaultRead(provider, blockNumber) {
       return { id, seller: row.seller, circuits: row.circuits, circuitId: row.tokenId,
         price: row.price, valid: row.valid };
     },
-    miner: async (collection, tokenId) => mining.getMiner(await mining.minerKey(collection, tokenId, opts), opts),
+    miner: async (collection, tokenId) => {
+      const key = await mining.minerKey(collection, tokenId, opts);
+      live(signal);
+      return mining.getMiner(key, opts);
+    },
   };
 }
 
@@ -145,8 +150,11 @@ export async function discoverOfficialMarketCandidates({ provider, constraints, 
   now = Date.now(), blockNumber, read, sort = 'capacity', maxNewListings = MAX_NEW_LISTINGS,
   ...snapshotOptions }) {
   need(provider || read, 'A read-only BSC provider is required.');
+  live(signal);
   const source = await fetchOfficialSnapshot({ fetcher, signal, now, ...snapshotOptions });
+  live(signal);
   const head = blockNumber ?? await provider.getBlockNumber();
+  live(signal);
   need(Number.isSafeInteger(head) && head > 0 && source.blockNumber <= head && head - source.blockNumber <= 1_200,
     'Official market source block is missing, ahead or too far behind.');
   const model = {
@@ -159,8 +167,10 @@ export async function discoverOfficialMarketCandidates({ provider, constraints, 
   };
   need(model.minVerifiedWeight > 0n && model.referenceVerifiedWeight > 0n && model.referencePriceWei > 0n && model.priceCap > 0n,
     'Invalid pool purchase constraints.');
-  const chain = read ?? defaultRead(provider, head);
+  const chain = read ?? defaultRead(provider, head, signal);
+  live(signal);
   const nextId = natural(await chain.nextListingId(), 'chain next listing ID');
+  live(signal);
   // Despite its name, CircuitMarket.nextListingId() is the latest assigned ID.
   // The official UI starts its descending scan at nextListingId() + 1.
   need(nextId >= BigInt(source.maxId), 'Official snapshot is ahead of the chain listing head.');
@@ -172,16 +182,21 @@ export async function discoverOfficialMarketCandidates({ provider, constraints, 
   // Re-read every active listing in the target collection. An older listing may have
   // been repriced below the cap without increasing nextListingId().
   for (let offset = 0; offset < activeTargetListings.length; offset += 8) {
+    live(signal);
     const current = await Promise.all(activeTargetListings.slice(offset, offset + 8).map(async original => {
       const live = parseListing(await chain.listingView(original.listingId), model, nextId, true);
       if (live && live.key !== original.key) throw new Error('Official listing identity changed.');
       return live && live.priceWei <= model.priceCap ? live : null;
     }));
+    live(signal);
     rows.push(...current.filter(Boolean));
   }
   for (let id = BigInt(source.maxId) + 1n; id <= nextId; id += 8n) {
+    live(signal);
     const ids = Array.from({ length: Number(nextId - id + 1n < 8n ? nextId - id + 1n : 8n) }, (_, index) => id + BigInt(index));
-    rows.push(...(await Promise.all(ids.map(value => chain.listingView(value))))
+    const batch = await Promise.all(ids.map(value => chain.listingView(value)));
+    live(signal);
+    rows.push(...batch
       .map(row => parseListing(row, model, nextId)).filter(Boolean));
   }
   const byMiner = new Map();
@@ -192,6 +207,7 @@ export async function discoverOfficialMarketCandidates({ provider, constraints, 
   const candidates = [...byMiner.values()];
   const qualified = [];
   for (let offset = 0; offset < candidates.length; offset += 8) {
+    live(signal);
     const batch = await Promise.all(candidates.slice(offset, offset + 8).map(async candidate => {
       const miner = await chain.miner(candidate.collection, candidate.tokenId);
       const verifiedWeight = isEligibleMiner(miner, candidate, model);
@@ -200,8 +216,10 @@ export async function discoverOfficialMarketCandidates({ provider, constraints, 
         indexerBuyerCostWei: null, discoverySource: 'TapeOut official snapshot', discoveryVenue: 'official',
         officialListingSource: 'CircuitMarket listing snapshot', officialObservedBlock: head };
     }));
+    live(signal);
     qualified.push(...batch.filter(Boolean));
   }
+  live(signal);
   qualified.sort((a, b) => compare(a, b, sort));
   return { candidates: qualified, source: OFFICIAL_SNAPSHOT_URL, sourceBlock: source.blockNumber,
     generatedAt: new Date(source.generatedAt).toISOString(), chainBlock: head,

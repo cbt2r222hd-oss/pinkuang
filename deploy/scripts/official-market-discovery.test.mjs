@@ -116,6 +116,25 @@ test('official discovery fails closed on missing newest listings, source lag or 
     read: { nextListingId: async () => 3n } }), /ahead of the chain/);
 });
 
+test('abort is checked after listing and miner RPC batches so a timed-out scan stops', async () => {
+  const source = async () => response(fixture([listing(1)], { maxId: 1 }));
+  const duringListing = new AbortController();
+  let minerReads = 0;
+  await assert.rejects(discoverOfficialMarketCandidates({ now, blockNumber: 101, constraints,
+    fetcher: source, signal: duringListing.signal,
+    read: { nextListingId: async () => 1n,
+      listingView: async () => { duringListing.abort(); return listing(1); },
+      miner: async () => { minerReads += 1; return miner(1); } },
+  }), /aborted/);
+  assert.equal(minerReads, 0, 'miner batch must not start after listing batch abort');
+  const duringMiner = new AbortController();
+  await assert.rejects(discoverOfficialMarketCandidates({ now, blockNumber: 101, constraints,
+    fetcher: source, signal: duringMiner.signal,
+    read: { nextListingId: async () => 1n, listingView: async () => listing(1),
+      miner: async () => { duringMiner.abort(); return miner(1); } },
+  }), /aborted/);
+});
+
 test('enumeration boundary uses the on-chain nextListingId at one block', async () => {
   const abi = new Interface(['function nextListingId() view returns(uint256)']);
   const provider = { getBlockNumber: async () => 101,
