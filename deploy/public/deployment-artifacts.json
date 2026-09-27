@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "compilerVersion": "0.8.24+commit.e11b9ed9.Emscripten.clang",
-  "sourceCommit": "be9e48f32fb3393306f6b86b24d1a80b6623a732",
+  "sourceCommit": "38c7c06f40de0bbfbcb0c4ec3a2b631e4f0aa5b6",
   "settings": {
     "optimizer": {
       "enabled": true,
