@@ -28,6 +28,20 @@ function minerEligibilityIssue(miner) {
 }
 export const QUOTE_BASE = '/pinkuang-deploy/firsto-api';
 export const QUOTE_SOURCE = 'https://tapeout.firsto.ai/circuits';
+/** Exact BNB per estimated daily BEM for the displayed market ask; never use the fundraising reserve. */
+export function listingDailyCapacityPrice(priceWei, estimated24hAtomic, decimals = 4) {
+  if (priceWei == null || estimated24hAtomic == null) return null;
+  const price = uint(priceWei), yieldAtomic = uint(estimated24hAtomic);
+  if (price === 0n || yieldAtomic === 0n) return null;
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 12) throw new Error('日产能价精度无效。');
+  const scale = 10n ** BigInt(decimals);
+  // BEM has 8 decimals and BNB has 18: priceWei / (yieldAtomic * 10^10).
+  const denominator = yieldAtomic * 10_000_000_000n;
+  const rounded = (price * scale + denominator / 2n) / denominator;
+  if (rounded === 0n) return `<${decimals === 0 ? '1' : `0.${'0'.repeat(decimals - 1)}1`}`;
+  if (decimals === 0) return rounded.toString();
+  return `${rounded / scale}.${(rounded % scale).toString().padStart(decimals, '0')}`;
+}
 export function operatorQuoteError(error) {
   if (error instanceof SyntaxError) return '报价内容不完整，请重新获取；手动导入时请使用完整的报价 JSON。';
   if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return '报价读取超时，请重新获取。';
