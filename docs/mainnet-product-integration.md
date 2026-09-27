@@ -36,17 +36,31 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 | `HOST` / `PORT` | `127.0.0.1` / `4173` |
 | `DEPLOYMENT_JOURNAL_ORIGIN` | `https://tapeout.cc.cd`，不含路径 |
 | `DEPLOYMENT_JOURNAL_DB` | 持久 SQLite 文件；父目录权限 0700，服务账户可读写 |
-| `DEPLOYMENT_JOURNAL_RPC_URL` | 已核验 chainId 的 HTTPS BSC RPC |
+| `DEPLOYMENT_JOURNAL_RPC_URL` | `https://bsc-dataseed.bnbchain.org`，用于签名前检查与回执核对 |
 | `BEMINE_JOURNAL_FACTORIES` | 本次 Factory 地址 |
 | `BEMINE_DEPLOYMENT_RECORD_PATH` | 服务端私有、完整、已完成的可信部署记录路径 |
-| `BEMINE_READ_RPC_URL` | 固定只读 RPC；未设时沿用日志 RPC |
+| `BEMINE_READ_RPC_URL` | `https://bsc-dataseed.bnbchain.org`；未设时沿用 `DEPLOYMENT_JOURNAL_RPC_URL` |
 | `BEMINE_INDEX_URL` | `http://127.0.0.1:4180` |
-| `CHAIN_INDEX_RPC_URL` | 支持历史 `eth_getLogs` 的已验证 HTTPS BSC RPC |
+| `CHAIN_INDEX_RPC_URL` | `https://bsc-dataseed.bnbchain.org`；读取主网区块、合约代码与状态 |
+| `CHAIN_INDEX_LOGS_RPC_URL` | `https://public.1rpc.io/bnb`；单独提供历史 `eth_getLogs` |
+| `CHAIN_INDEX_SCAN_RANGE` | `50`；限制每个日志查询批次的区块跨度，匹配本次 1RPC 实测限制 |
 | `CHAIN_INDEX_DB` | 独立持久索引数据库 |
 | `CHAIN_INDEX_FACTORY` / `CHAIN_INDEX_MARKET` | 上述 Factory / ShareMarket |
 | `CHAIN_INDEX_START_BLOCK` | `124286242` |
 | `CHAIN_INDEX_CONFIRMATIONS` | `12` |
 | `CHAIN_INDEX_HOST` / `CHAIN_INDEX_PORT` | `127.0.0.1` / `4180` |
+
+本次索引器使用**双 RPC**：官方节点读取区块、代码和合约状态，1RPC 仅处理事件日志查询；每轮同步直接核对两个节点的 `eth_chainId=56`。官方节点不能据此当作历史日志服务使用。虽然代码允许省略 `CHAIN_INDEX_LOGS_RPC_URL` 并与主 RPC 共用地址，本次部署必须显式填写上述日志节点。
+
+日志节点已根据实际部署高度重新选择。BlockReq 本次探测只支持最近 8192 个区块，部署块 `124286242` 现已超出它的窗口，因此不能作为本项目的历史回填日志源。1RPC 本次可读取该历史部署块，但单次日志查询最多跨 50 个区块；生产使用 `CHAIN_INDEX_SCAN_RANGE=50`，不能沿用较大的扫描跨度。
+
+日志服务是否适用，须从实际部署块开始验收历史查询、事件身份、区块跨度限制及追平结果；只通过 `eth_chainId`、最新块或最近区块查询不够。节点的历史窗口与限额可能变化，换源时重新验收。读取受限应保留失败状态，不得把缺失历史视为合法空日志或把起始块改到较新位置绕过回填。
+
+日志的区块哈希逐条与主 RPC 扫描的区块头匹配，区块父哈希须连续，提交前再次检查区块尾部；不一致时不提交该批数据。追平时还对照链上矿池数与订单序号，防止明显遗漏的创建历史被报告为完整。
+
+两个 HTTP 客户端均为 12 秒超时、最多 8 条批处理。关闭 SDK 内部的 429 重试，由同步循环按连续失败次数等待 4、8、16、32、60 秒，后续最多 60 秒；成功后清零，追平期间间隔 1 秒、追平后间隔 10 秒。停服停止排队任务并等待有界的正在进行请求；重复关闭共用一次完成状态。限流、超时、错误网络和批次哈希不一致时，该失败批次不前移游标，不把错误当成空日志或切到其他网络；已提交历史发生重组时，按规范链检查回退后重新扫描。
+
+`/health` 返回 HTTP 200 只表示服务存活，发布验收还须检查 `source.complete=true`、`unknownReason=null` 及已核验区块。追平前业务索引接口返回 503。索引使用 12 块确认深度，不代替产品交易的独立最终回执校验。免费日志节点可能限流，应以健康状态判断当前可用性；更换节点由运营显式配置并重新验证，不自动放宽检查。
 
 可信记录从服务器已有完成日志导出，经只读核验后放入私有运维目录，再配置服务路径。文件须包含 13 个已确认步骤、初始化回执、完整地址与运行代码摘要、通过的检查及匹配当前产物的 artifactDigest。不能使用浏览器任意提交的记录代替，也不能只填一个工厂地址放行；运行账户须能读取该私有文件。公开清单与私有记录分开保存。
 
@@ -66,8 +80,8 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 
 | 检查 | 结果 | 证明范围 |
 |---|---|---|
-| Linux 后台回归 | 81/81 | 包含日志恢复、并发许可、可信图、代理及索引基础用例 |
-| 索引专项复跑 | 10/10 | 索引行为；不与上述重叠用例重复累计 |
+| Linux 后台基线回归 | 81/81（双 RPC 新增专项前） | 包含日志恢复、并发许可、可信图、代理及索引基础用例 |
+| 索引与启动服务专项复跑 | 16/16（原索引 10 + 双 RPC/退避/关闭 6） | 本机 mock RPC 验证分流、错误链、429、超时及幂等关闭；不与基线重叠累计 |
 | 前端脚本回归 | 108/108 | 当前前端读取、构造调用、交互状态与保护逻辑 |
 | 本机 Anvil 资金回路 | 2/2 | 实际本机 EVM 执行：未满额撤回提现、募集超时退款提现 |
 | 主网只读图检查 | 通过，区块 `124292027` | 本次既有地址、代码、实现关系与运营绑定 |
@@ -79,7 +93,7 @@ Nginx 只代理以上前缀，避免占用芯火夺宝原站 `/api`。BEMine 日
 ```sh
 cd deploy
 node --test $(find server -name '*.test.mjs' ! -name artifact-digest.test.mjs -print)
-node --test server/chain-index/indexer.test.mjs
+node --test server/chain-index/indexer.test.mjs server/chain-index/server.test.mjs
 node --test server/artifact-digest.test.mjs
 cd ../web
 node --test scripts/*.test.mjs
