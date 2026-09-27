@@ -1,6 +1,7 @@
 import { getAddress, parseEther, toQuantity, ZeroAddress } from 'ethers';
 import { abi, uint, poolKey, readPoolSnapshot, personalPoolAction } from './chain-client.mjs';
 import { readGovernanceSnapshot, governanceAction } from './live-governance.mjs';
+import { settleReadRound } from './read-retry.mjs';
 
 const assert = (value, message) => { if (!value) throw new Error(message); };
 const same = (a, b) => getAddress(a) === getAddress(b);
@@ -55,8 +56,11 @@ export async function prepareProductAction({ provider, config, account, pool, ki
   const market = MARKET_ACTIONS.has(kind) ? configured('shareMarket') : null;
   assert(!same(factory, lens) && (!market || !same(market, factory) && !same(market, lens)), '部署地址重复 / Duplicate deployment addresses.');
   const request = (method, params = []) => provider.request({ method, params });
-  assert(BigInt(await request('eth_chainId')) === 56n, '请切换到 BSC / Switch to BSC.');
-  const block = await request('eth_getBlockByNumber', ['latest', false]);
+  const { chain, block } = await settleReadRound({
+    chain: () => request('eth_chainId'),
+    block: () => request('eth_getBlockByNumber', ['latest', false]),
+  });
+  assert(BigInt(chain) === 56n, '请切换到 BSC / Switch to BSC.');
   assert(block && HASH.test(block.hash ?? '') && /^0x[\da-f]+$/i.test(block.number ?? '')
     && /^0x[\da-f]+$/i.test(block.timestamp ?? ''), '区块信息无效 / Invalid block header.');
   const blockNumber = uint(BigInt(block.number)), timestamp = uint(BigInt(block.timestamp)), blockTag = toQuantity(blockNumber);
@@ -72,9 +76,12 @@ export async function prepareProductAction({ provider, config, account, pool, ki
     const parsed = contract.parseTransaction(transaction);
     const output = await request('eth_call', [unsigned, blockTag]);
     contract.decodeFunctionResult(parsed.fragment, output);
-    const after = await request('eth_getBlockByNumber', [blockTag, false]);
+    const { after, finalChain } = await settleReadRound({
+      after: () => request('eth_getBlockByNumber', [blockTag, false]),
+      finalChain: () => request('eth_chainId'),
+    });
     assert(after?.hash?.toLowerCase() === block.hash.toLowerCase() && BigInt(after?.number ?? -1) === blockNumber
-      && BigInt(after?.timestamp ?? -1) === timestamp && BigInt(await request('eth_chainId')) === 56n,
+      && BigInt(after?.timestamp ?? -1) === timestamp && BigInt(finalChain) === 56n,
     '读取期间区块或网络已变化，请重新确认 / Chain changed; prepare again.');
     return Object.freeze({ transaction, kind: kind === 'marketWithdraw' ? 'withdrawBnb' : kind,
       requestKind: kind, pool: null, ...details, checkedBlock: Object.freeze({ blockNumber, blockHash: block.hash, timestamp }) });
@@ -91,15 +98,26 @@ export async function prepareProductAction({ provider, config, account, pool, ki
   }
 
   if (market) {
-    assert(same((await call(market, abi.ShareMarket, 'factory'))[0], factory), '市场身份不匹配 / Market identity mismatch.');
-    assert(same((await call(factory, abi.PoolFactory, 'shareMarket'))[0], market), '市场登记不匹配 / Market registration mismatch.');
+    const orderNumber = kind !== 'list' && kind !== 'marketWithdraw' ? id(orderId) : null;
+    // Back references, order and expiry are independent reads at the same pinned block.
+    // Validate both market bindings before using any concurrent order/balance results.
+    const marketReads = await settleReadRound({
+      marketFactory: () => call(market, abi.ShareMarket, 'factory'),
+      registeredMarket: () => call(factory, abi.PoolFactory, 'shareMarket'),
+      ...(kind === 'marketWithdraw' ? { owed: () => call(market, abi.ShareMarket, 'bnbOwed', [from]) } : {}),
+      ...(orderNumber !== null ? {
+        order: () => call(market, abi.ShareMarket, 'orders', [orderNumber]),
+        expiry: () => call(market, abi.ShareMarket, 'orderExpiresAt', [orderNumber]),
+      } : {}),
+    });
+    assert(same(marketReads.marketFactory[0], factory), '市场身份不匹配 / Market identity mismatch.');
+    assert(same(marketReads.registeredMarket[0], market), '市场登记不匹配 / Market registration mismatch.');
     if (kind === 'marketWithdraw') {
-      assert((await call(market, abi.ShareMarket, 'bnbOwed', [from]))[0] > 0n, '暂无可领取市场余额 / No market BNB to withdraw.');
+      assert(marketReads.owed[0] > 0n, '暂无可领取市场余额 / No market BNB to withdraw.');
       return finish(tx(market, abi.ShareMarket, 'withdrawBnb'));
     }
     if (kind !== 'list') {
-      const orderNumber = id(orderId), order = (await call(market, abi.ShareMarket, 'orders', [orderNumber]))[0];
-      const expiry = (await call(market, abi.ShareMarket, 'orderExpiresAt', [orderNumber]))[0];
+      const order = marketReads.order[0], expiry = marketReads.expiry[0];
       assert(order.active === true && order.remaining > 0n && order.remaining <= 100n, '订单已结束 / Order is no longer active.');
       const target = address(order.pool); address(order.seller);
       if (pool !== undefined && pool !== null) assert(same(target, pool), '订单对应矿池已变化 / Order pool mismatch.');

@@ -1,5 +1,6 @@
 import { getAddress, hexlify, toUtf8Bytes, toQuantity } from 'ethers';
 import { abi } from './chain-client.mjs';
+import { settleReadRound } from './read-retry.mjs';
 const HASH = /^0x[0-9a-f]{64}$/i;
 const ZERO = `0x${'0'.repeat(40)}`;
 const POOL_ACTIONS = new Set(['deposit','withdrawDeposit','finalizeFailure','harvest','claim','withdrawBnb','propose','vote','executeSale','cancelExpired','completeSale','buyFromMarket','buyAlternativeFromMarket','mine']);
@@ -38,7 +39,10 @@ async function request(config, path, method = 'GET', body, account, fetcher = gl
 }
 export async function requireWallet(provider, account) {
   requireValue(provider?.request, '请先连接钱包。');
-  const [chain, accounts] = await Promise.all([provider.request({ method: 'eth_chainId' }), provider.request({ method: 'eth_accounts' })]);
+  const { chain, accounts } = await settleReadRound({
+    chain: () => provider.request({ method: 'eth_chainId' }),
+    accounts: () => provider.request({ method: 'eth_accounts' }),
+  });
   requireValue(exact(chain) === 56n, '请将钱包切换至 BSC 主网。');
   requireValue(Array.isArray(accounts) && same(accounts[0], account), '钱包账户已变化，请重新连接后确认。');
   return address(accounts[0]);
@@ -48,10 +52,28 @@ export async function connectWallet(provider) {
   requireValue(provider?.request, '未找到钱包，请使用支持钱包的浏览器。');
   const accounts = await provider.request({ method: 'eth_requestAccounts' });
   requireValue(Array.isArray(accounts) && accounts.length, '钱包未提供账户。');
-  return requireWallet(provider, address(accounts[0]));
+  const owner = address(accounts[0]);
+  if (exact(await provider.request({ method: 'eth_chainId' })) !== 56n) {
+    try {
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x38' }] });
+    } catch (error) {
+      // Only an unknown network may request installation. Rejection is never retried.
+      const code = Number(error?.code) === -32603
+        ? error?.data?.originalError?.code : error?.code ?? error?.data?.originalError?.code;
+      if (Number(code) !== 4902) throw error;
+      await provider.request({ method: 'wallet_addEthereumChain', params: [{
+        chainId: '0x38', chainName: 'BNB Smart Chain',
+        nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
+        rpcUrls: ['https://bsc-dataseed.bnbchain.org'], blockExplorerUrls: ['https://bscscan.com'],
+      }] });
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x38' }] });
+    }
+  }
+  // A successful permission/switch response does not prove the selected account or chain.
+  return requireWallet(provider, owner);
 }
 /** Authentication may prompt personal_sign. Call only from the user's connect/login action. */
-export async function authenticate({ provider, account, config = {}, fetcher = globalThis.fetch }) {
+export async function authenticate({ provider, account, config = {}, fetcher = globalThis.fetch, onState }) {
   const owner = await requireWallet(provider, address(account));
   try {
     const current = await request(config, 'session', 'GET', undefined, undefined, fetcher);
@@ -67,6 +89,7 @@ export async function authenticate({ provider, account, config = {}, fetcher = g
   const expires = Date.parse(lines[5].slice(12));
   requireValue(expires > Date.now() && expires <= Date.now() + 310_000, '登录挑战已过期，请重新登录。');
   await requireWallet(provider, owner);
+  emit(onState, { status: 'awaiting-login-signature' });
   const signature = await provider.request({ method: 'personal_sign', params: [hexlify(toUtf8Bytes(challenge.message)), owner] });
   await requireWallet(provider, owner);
   const session = await request(config, 'session', 'POST', { account: owner, nonce: challenge.nonce, signature }, undefined, fetcher);
@@ -238,21 +261,25 @@ export async function sendProductTransaction({ provider, config, transaction, ac
   active.add(lane);
   let record, hash, revision;
   try {
-    await requireWallet(provider, account);
-    const session = await request(config, 'session', 'GET', undefined, account, fetcher);
+    emit(onState, { status: 'preparing' });
+    // Independent reads overlap, but every started read settles before an intent can be saved.
+    const { session, view } = await settleReadRound({
+      wallet: () => requireWallet(provider, account),
+      session: () => request(config, 'session', 'GET', undefined, account, fetcher),
+      view: () => readPending({ account, config, fetcher }),
+    });
     requireValue(same(session.account, account), '请先点击连接钱包并完成本站登录。');
-    const view = await readPending({ account, config, fetcher });
     requireValue(!view.record, '这个钱包有待核对交易，请先核对回执；不要重复发送。');
     revision = view.revision;
     const unsigned = { from: account, to: target, data, value: toQuantity(value) };
-    emit(onState, { status: 'preparing' });
-    await provider.request({ method: 'eth_call', params: [unsigned, 'latest'] });
-    const [latest, pending, estimate, price, balance] = await Promise.all([
-      provider.request({ method: 'eth_getTransactionCount', params: [account, 'latest'] }),
-      provider.request({ method: 'eth_getTransactionCount', params: [account, 'pending'] }),
-      provider.request({ method: 'eth_estimateGas', params: [unsigned] }),
-      provider.request({ method: 'eth_gasPrice' }), provider.request({ method: 'eth_getBalance', params: [account, 'latest'] }),
-    ]);
+    const { latest, pending, estimate, price, balance } = await settleReadRound({
+      simulation: () => provider.request({ method: 'eth_call', params: [unsigned, 'latest'] }),
+      latest: () => provider.request({ method: 'eth_getTransactionCount', params: [account, 'latest'] }),
+      pending: () => provider.request({ method: 'eth_getTransactionCount', params: [account, 'pending'] }),
+      estimate: () => provider.request({ method: 'eth_estimateGas', params: [unsigned] }),
+      price: () => provider.request({ method: 'eth_gasPrice' }),
+      balance: () => provider.request({ method: 'eth_getBalance', params: [account, 'latest'] }),
+    });
     const nonce = exact(latest), gas = productGasLimit(estimate), gasPrice = exact(price);
     requireValue(nonce === exact(pending) && nonce <= BigInt(Number.MAX_SAFE_INTEGER), '钱包存在其他待确认交易，请先在钱包中处理。');
     requireValue(gas > 0n && gas <= exact(config.maxGasLimit ?? '5000000') && gasPrice > 0n
@@ -260,9 +287,11 @@ export async function sendProductTransaction({ provider, config, transaction, ac
     requireValue(exact(balance) >= value + gas * gasPrice, 'BNB 余额不足以支付款项和 Gas。');
     const prepared = { version: 2, chainId: 56, account, factory, target, targetType, nonce: Number(nonce),
       action: normalized.action, data, value: value.toString(), gas: gas.toString(), gasPrice: gasPrice.toString(), submittedAt: new Date().toISOString() };
+    emit(onState, { status: 'recording-intent' });
     const ack = await request(config, 'market', 'PUT', { record: prepared, expectedRevision: revision }, account, fetcher);
     requireValue(Number.isSafeInteger(ack.revision) && ack.revision === revision + 1, '签名前记录未得到可靠确认，已停止发送。');
     record = prepared; revision = ack.revision;
+    emit(onState, { status: 'authorizing' });
     const permit = await request(config, 'market/arm', 'POST', { expectedRevision: revision }, account, fetcher);
     requireValue(permit.revision === revision + 1 && permit.record
       && ['version','chainId','nonce','data','value','gas','gasPrice','submittedAt','targetType'].every(key => permit.record[key] === prepared[key])

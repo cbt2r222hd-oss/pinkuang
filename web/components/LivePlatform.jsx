@@ -35,6 +35,8 @@ import SiteOverview from "./SiteOverview";
 import LiveYieldChart from "./LiveYieldChart";
 import LiveGovernance from "./LiveGovernance";
 import LiveOperator from "./LiveOperator";
+import WalletConnectModal, { WalletIcon } from "./WalletConnectModal";
+import { createWalletDiscovery, walletConnectionError } from "../lib/wallet-discovery.mjs";
 import { sameUnsignedIntent } from "../lib/ui-context.mjs";
 import { READ_CANCELLED, retryReadRound, settleReadRound } from "../lib/read-retry.mjs";
 import { prepareAdminAction, readOperatorStatus } from "../lib/live-admin.mjs";
@@ -87,6 +89,18 @@ const statuses = {
   Closed: ["已结束", "Closed"],
   Refunding: ["可退款", "Refunding"],
   Unknown: ["状态待核对", "Unknown"],
+};
+const transactionLabels = {
+  authenticating: ['正在核对钱包登录…', 'Checking wallet login…'],
+  'awaiting-login-signature': ['请在钱包中确认登录消息', 'Confirm the login message in your wallet'],
+  rechecking: ['正在核对最新交易信息…', 'Checking the latest transaction details…'],
+  preparing: ['正在核对余额与 Gas 费用…', 'Checking your balance and Gas fees…'],
+  'recording-intent': ['正在确认订单信息…', 'Confirming order details…'],
+  authorizing: ['正在完成发送前检查…', 'Completing final transaction checks…'],
+  'awaiting-signature': ['请在钱包弹窗中确认交易', 'Confirm the transaction in your wallet'],
+  pending: ['交易已提交，正在核对链上结果…', 'Transaction submitted. Checking the on-chain result…'],
+  'needs-verification': ['发送结果待核对，请检查钱包记录', 'Submission needs verification. Check your wallet history'],
+  confirmed: ['交易已在链上确认', 'Transaction confirmed on chain'],
 };
 const actionNames = {
   deposit: ["认购份额", "Subscribe"],
@@ -171,6 +185,10 @@ export default function LivePlatform() {
     [client, setClient] = useState(null),
     [account, setAccount] = useState(null),
     [wallet, setWallet] = useState(null);
+  const [wallets, setWallets] = useState([]),
+    [walletInfo, setWalletInfo] = useState(null),
+    [connectingId, setConnectingId] = useState(null),
+    [connectionError, setConnectionError] = useState("");
   const [pools, setPools] = useState([]),
     [positions, setPositions] = useState([]),
     [stats, setStats] = useState(null),
@@ -192,6 +210,7 @@ export default function LivePlatform() {
   const [positionsLoaded, setPositionsLoaded] = useState(false);
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
+    [transactionStage, setTransactionStage] = useState(null),
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
     [refresh, setRefresh] = useState(0);
@@ -211,6 +230,9 @@ export default function LivePlatform() {
     modalRef = useRef(null),
     restoreFocus = useRef(null),
     connectedWallet = useRef(null),
+    discovery = useRef(null),
+    connectionLock = useRef(null),
+    submissionLock = useRef(null),
     lastConfirmed = useRef(null),
     walletEpoch = useRef(0),
     activeModal = useRef(null);
@@ -220,6 +242,12 @@ export default function LivePlatform() {
       ? { ...boot, ...boot.manifest, journalBase: boot.journalBase || "/api/journal" }
       : null;
   const isOperator = operator?.isOperator === true && same(operator.account, account);
+
+  useEffect(() => {
+    const service = createWalletDiscovery(window, setWallets);
+    discovery.current = service;
+    return () => { service.destroy(); discovery.current = null; connectionLock.current = null; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -282,10 +310,12 @@ export default function LivePlatform() {
   useEffect(() => {
     if (!wallet?.on) return;
     const changed = () => {
+      if (connectedWallet.current !== wallet) return;
       epoch.current++;
       walletEpoch.current++;
       setAccount(null);
       setWallet(null);
+      setWalletInfo(null);
       connectedWallet.current = null;
       setPending(null);
       setPrepared(null);
@@ -302,9 +332,11 @@ export default function LivePlatform() {
     };
     wallet.on("accountsChanged", changed);
     wallet.on("chainChanged", changed);
+    wallet.on("disconnect", changed);
     return () => {
       wallet.removeListener?.("accountsChanged", changed);
       wallet.removeListener?.("chainChanged", changed);
+      wallet.removeListener?.("disconnect", changed);
     };
   }, [wallet, locale]);
   useEffect(() => {
@@ -314,7 +346,7 @@ export default function LivePlatform() {
     document.body.style.overflow = "hidden";
     modalRef.current?.querySelector("button,input")?.focus();
     const key = (e) => {
-      if (e.key === "Escape" && !busy) setModal(null);
+      if (e.key === "Escape" && (!busy || modal.type === "connect-wallet")) setModal(null);
       if (e.key === "Tab") {
         const elements = modalRef.current?.querySelectorAll(
           "button:not(:disabled),input:not(:disabled),a[href]",
@@ -501,23 +533,33 @@ export default function LivePlatform() {
       cancelled = true;
     };
   }, [client, route.route, route.pool, account, source, yieldDays]);
-  async function connect() {
+  function connect() {
+    if (busy && !connectionLock.current) return;
+    setConnectionError("");
+    discovery.current?.refresh();
+    setModal(connectionLock.current?.target || { type: "connect-wallet" });
+  }
+  async function selectWallet(entry) {
+    if (connectionLock.current || busy || activeModal.current?.type !== "connect-wallet") return;
+    // Keep the chosen concrete provider, never re-read a mutable window.ethereum here.
+    if (!discovery.current?.getWallets().some(item => item.id === entry.id && item.provider === entry.provider)) return;
+    const target = activeModal.current, ticket = { target }, context = walletEpoch.current;
+    connectionLock.current = ticket;
+    setConnectingId(entry.id);
+    setConnectionError("");
     setBusy(true);
-    setError("");
+    const current = () => connectionLock.current === ticket && activeModal.current === target
+      && context === walletEpoch.current;
     try {
-      const provider = window.ethereum;
-      if (!provider)
-        throw new Error(
-          L(
-            "请在支持钱包的浏览器中打开，或安装钱包扩展。",
-            "Open this site in your wallet browser or install a wallet extension.",
-          ),
-        );
+      const provider = entry.provider;
       const owner = await connectWallet(provider);
+      if (!current()) return;
       walletEpoch.current++;
       connectedWallet.current = provider;
       setWallet(provider);
+      setWalletInfo(entry);
       setAccount(getAddress(owner));
+      setPrepared(null);
       setModal(null);
       setPending(null);
       setMessage(
@@ -527,16 +569,27 @@ export default function LivePlatform() {
         ),
       );
     } catch (e) {
-      setError(textError(e));
+      if (current()) setConnectionError(walletConnectionError(e, locale));
     } finally {
-      setBusy(false);
+      if (connectionLock.current === ticket) {
+        connectionLock.current = null;
+        setConnectingId(null);
+        setBusy(false);
+      }
     }
   }
-  async function connectJournal() {
+  function showTransactionProgress(state) {
+    const reported = typeof state === 'string' ? state : state.status;
+    const stage = reported === 'pending' && typeof state === 'object' && !state.hash ? 'needs-verification' : reported;
+    setTransactionStage(stage);
+    setMessage(L(...(transactionLabels[stage] || transactionLabels.rechecking)));
+  }
+  async function connectJournal({ inspect = true, onState } = {}) {
     const context = walletEpoch.current;
     if (!wallet || !account || !config)
       throw new Error(L("请先连接钱包。", "Connect your wallet first."));
-    await authenticate({ provider: wallet, account, config });
+    await authenticate({ provider: wallet, account, config, onState });
+    if (!inspect) return; // sendProductTransaction performs its own fresh pending-record check.
     const result = await readPending({ account, config });
     if (context !== walletEpoch.current)
       throw new Error(
@@ -689,15 +742,20 @@ export default function LivePlatform() {
     }
   }
   async function submit() {
-    if (loading || busy || !prepared || prepared.forModal !== modal) return;
+    if (loading || busy || submissionLock.current || !prepared || prepared.forModal !== modal) return;
+    const ticket = {};
+    submissionLock.current = ticket;
     setBusy(true);
     setError("");
     const requestEpoch = walletEpoch.current,
       owner = account, target = modal, revision = epoch.current, confirmed = prepared;
     const current = () => requestEpoch === walletEpoch.current && revision === epoch.current && activeModal.current === target;
+    const progress = state => { if (current()) showTransactionProgress(state); };
     try {
-      await connectJournal();
+      progress('authenticating');
+      await connectJournal({ inspect: false, onState: progress });
       if (!current()) throw new Error(L("页面或钱包已改变，请重新预览。", "Page or wallet changed. Preview again."));
+      progress('rechecking');
       const checked = await prepareProductAction({ ...confirmed.input,
         ...(confirmed.previewBindings || {}), expectedPool: confirmed.pool || undefined,
         expectedAccount: owner });
@@ -708,13 +766,7 @@ export default function LivePlatform() {
         config,
         transaction: checked.transaction,
         action: { kind: checked.kind },
-        onState: (state) =>
-          requestEpoch === walletEpoch.current &&
-          setMessage(
-            typeof state === "string"
-              ? state
-              : L("正在核对交易…", "Checking transaction…"),
-          ),
+        onState: progress,
       });
       if (requestEpoch === walletEpoch.current)
         await handleResult(result, requestEpoch);
@@ -725,42 +777,56 @@ export default function LivePlatform() {
         if (requestEpoch === walletEpoch.current) setPending(state.record ? { ...state.record, canAbandon: state.canAbandon === true } : null);
       } catch {}
     } finally {
-      setBusy(false);
+      if (submissionLock.current === ticket) {
+        submissionLock.current = null;
+        setTransactionStage(null);
+        setBusy(false);
+      }
     }
   }
   async function sendGovernanceAction(pool, action) {
     const requestEpoch = walletEpoch.current, revision = epoch.current;
-    if (loading || busy || pending) throw new Error(L("请先完成数据加载和当前交易核对。", "Wait for data loading and resolve the current transaction first."));
+    if (loading || busy || submissionLock.current || pending) throw new Error(L("请先完成数据加载和当前交易核对。", "Wait for data loading and resolve the current transaction first."));
+    const ticket = {};
+    submissionLock.current = ticket;
     setBusy(true); setError("");
     try {
-      await connectJournal();
+      showTransactionProgress('authenticating');
+      await connectJournal({ inspect: false, onState: state => { if (requestEpoch === walletEpoch.current) showTransactionProgress(state); } });
       if (requestEpoch !== walletEpoch.current || revision !== epoch.current)
         throw new Error(L("页面或钱包已改变，请重新预览。", "Page or wallet changed. Preview again."));
+      showTransactionProgress('rechecking');
       const checked = await prepareProductAction({ provider: wallet, config, account, pool, ...action });
       if (requestEpoch !== walletEpoch.current || revision !== epoch.current)
         throw new Error(L("页面或钱包已改变，请重新预览。", "Page or wallet changed. Preview again."));
       const result = await sendProductTransaction({ provider: wallet, config,
-        transaction: checked.transaction, action: { kind: checked.kind } });
+        transaction: checked.transaction, action: { kind: checked.kind },
+        onState: state => { if (requestEpoch === walletEpoch.current) showTransactionProgress(state); } });
       await handleResult(result, requestEpoch);
       return result;
-    } finally { if (requestEpoch === walletEpoch.current) setBusy(false); }
+    } finally { if (submissionLock.current === ticket) { submissionLock.current = null; setBusy(false); setTransactionStage(null); } }
   }
   async function sendAdminAction(preview) {
     const requestEpoch = walletEpoch.current, revision = epoch.current;
-    if (loading || busy || pending || !isOperator) throw new Error(L("运营权限或交易状态已变化，请重新读取。", "Operator permissions or transaction state changed."));
+    if (loading || busy || submissionLock.current || pending || !isOperator) throw new Error(L("运营权限或交易状态已变化，请重新读取。", "Operator permissions or transaction state changed."));
+    const ticket = {};
+    submissionLock.current = ticket;
     setBusy(true); setError("");
     const current = () => requestEpoch === walletEpoch.current && revision === epoch.current;
     try {
-      await connectJournal();
+      showTransactionProgress('authenticating');
+      await connectJournal({ inspect: false, onState: state => { if (current()) showTransactionProgress(state); } });
       if (!current()) throw new Error(L("页面或钱包已改变，请重新预览。", "Page or wallet changed. Preview again."));
+      showTransactionProgress('rechecking');
       const checked = await prepareAdminAction({ provider: wallet, config, account, ...preview.input });
       if (!current() || !sameUnsignedIntent(preview.transaction, checked.transaction))
         throw new Error(L("运营操作参数已变化，请重新预览。", "Operation changed. Preview again."));
       const result = await sendProductTransaction({ provider: wallet, config,
-        transaction: checked.transaction, action: { kind: checked.kind } });
+        transaction: checked.transaction, action: { kind: checked.kind },
+        onState: state => { if (current()) showTransactionProgress(state); } });
       await handleResult(result, requestEpoch);
       return result;
-    } finally { if (requestEpoch === walletEpoch.current) setBusy(false); }
+    } finally { if (submissionLock.current === ticket) { submissionLock.current = null; setBusy(false); setTransactionStage(null); } }
   }
   async function recover() {
     const context = walletEpoch.current;
@@ -1007,10 +1073,17 @@ export default function LivePlatform() {
         <Empty
           title={
             loading
-              ? L("正在读取项目…", "Loading projects…")
-              : L("暂无匹配项目", "No matching pools")
+              ? L("正在核对合约和链上项目，请稍候…", "Checking contracts and on-chain pools…")
+              : !source ? L("项目数据暂不可用", "Project data is unavailable")
+                : !holdings && pools.length === 0 ? L("尚未创建拼矿项目", "No pools have been created yet")
+                  : L("暂无匹配项目", "No matching pools")
           }
-        />
+        >
+          {!loading && source && !holdings && pools.length === 0 && <>
+            {L("运营方创建项目后，将在这里开放认购。", "Subscriptions will appear here once the operator creates a pool.")}
+            {isOperator && <Button secondary disabled={busy} onClick={() => go('operator')}>{L('创建首个项目', 'Create the first pool')}</Button>}
+          </>}
+        </Empty>
       )}
     </div>
   );
@@ -1204,12 +1277,12 @@ export default function LivePlatform() {
               <option value="en">English</option>
             </select>
             <Button
-              disabled={loading || busy || boot.status !== "ready"}
+              disabled={busy && !connectingId}
               onClick={() =>
-                account ? setModal({ type: "wallet" }) : connect()
+                connectingId ? connect() : account ? setModal({ type: "wallet" }) : connect()
               }
             >
-              <Wallet size={17} />
+              {account && walletInfo ? <WalletIcon wallet={walletInfo} size={19} /> : <Wallet size={17} />}
               {account
                 ? shortAddress(account)
                 : L("连接钱包", "Connect wallet")}
@@ -1224,14 +1297,13 @@ export default function LivePlatform() {
               <div>
                 <strong>
                   {boot.status === "loading"
-                    ? L("正在连接拼矿…", "Connecting to BEMine…")
-                    : L("拼矿即将开放", "BEMine is coming soon")}
+                    ? L("正在核对链上数据…", "Checking on-chain data…")
+                    : L("数据暂不可用", "Data temporarily unavailable")}
                 </strong>
                 <p>
-                  {L(
-                    "项目开放后，你可以在这里查看矿机、共同出资并分享邀请。",
-                    "When pools open, explore miners, subscribe and invite friends here.",
-                  )}
+                  {boot.status === "loading"
+                    ? L("正在核对合约和链上项目，请稍候。", "Checking contracts and on-chain pools. Please wait.")
+                    : L("暂时无法完成链上核验，请稍后刷新。", "On-chain verification is temporarily unavailable. Please refresh later.")}
                 </p>
               </div>
               <a
@@ -2291,7 +2363,9 @@ export default function LivePlatform() {
               {source
                 ? L("数据区块", "Data block") +
                   ` ${source.indexedBlock ?? source.indexedThrough ?? source.blockNumber ?? "—"}`
-                : L("等待项目开放", "Awaiting launch")}
+                : boot.status === 'loading' || loading
+                  ? L("正在核对链上数据", "Checking on-chain data")
+                  : L("数据暂不可用", "Data temporarily unavailable")}
             </span>
           </footer>
         </main>
@@ -2316,7 +2390,7 @@ export default function LivePlatform() {
             {modal.type !== "share" && (
               <button
                 className="modal-close icon-button"
-                disabled={loading || busy}
+                disabled={modal.type === "connect-wallet" ? false : loading || busy}
                 aria-label={L("关闭弹窗", "Close dialog")}
                 onClick={() => {
                   setModal(null);
@@ -2326,7 +2400,12 @@ export default function LivePlatform() {
                 <X size={21} />
               </button>
             )}
-            {modal.type === "share" ? (
+            {modal.type === "connect-wallet" ? (
+              <WalletConnectModal wallets={wallets} onSelect={selectWallet}
+                onRefresh={() => discovery.current?.refresh()} pendingId={connectingId}
+                error={connectionError} locale={locale}
+                dappUrl={typeof window === 'undefined' ? publicBaseUrl : window.location.href} />
+            ) : modal.type === "share" ? (
               <>
                 <h2 id="live-dialog-title" className="sr-only">
                   {L("邀请朋友一起拼矿", "Invite friends to BEMine")}
@@ -2342,11 +2421,13 @@ export default function LivePlatform() {
             ) : modal.type === "wallet" ? (
               <>
                 <h2 id="live-dialog-title">{L("我的钱包", "My wallet")}</h2>
+                {walletInfo && <p className="wallet-connected-brand"><WalletIcon wallet={walletInfo} size={28} /> {walletInfo.name}</p>}
                 <p className="live-wrap">{account}</p>
                 <div className="live-actions">
                   <Button disabled={loading || busy} onClick={inspectPending}>
                     {L("核对待处理交易", "Check pending transactions")}
                   </Button>
+                  <Button secondary disabled={busy} onClick={connect}>{L("切换钱包", "Switch wallet")}</Button>
                   <Button
                     secondary
                     disabled={loading || busy}
@@ -2355,6 +2436,8 @@ export default function LivePlatform() {
                       walletEpoch.current++;
                       setAccount(null);
                       setWallet(null);
+                      setWalletInfo(null);
+                      connectedWallet.current = null;
                       setPending(null);
                       setPositions([]);
                       setModal(null);
@@ -2538,6 +2621,9 @@ export default function LivePlatform() {
                               "Gas is shown by your wallet. Check the amount before confirming. A subscription is only successful after on-chain confirmation.",
                             )}
                           </p>
+                          {busy && transactionStage && <p className="wallet-connect-status" role="status" aria-live="polite">
+                            {L(...(transactionLabels[transactionStage] || transactionLabels.rechecking))}
+                          </p>}
                           <div className="live-actions">
                             <Button
                               disabled={loading || busy || !!pending}

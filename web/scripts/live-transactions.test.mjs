@@ -255,3 +255,76 @@ test('missing, lost or modified single-use signing permission never opens the wa
     assert(f.state.record);assert(!f.calls.some(x=>x.method==='eth_sendTransaction'));
   }
 });
+
+test('independent preflight reads overlap while intent ACK and signing permission stay sequential', async () => {
+  const f=fixture(), original=f.provider.request.bind(f.provider), states=[];
+  const groups=[new Set(),new Set()], release=[], gates=groups.map((_,i)=>new Promise(resolve=>{release[i]=resolve;}));
+  const timers=groups.map((_,i)=>setTimeout(()=>release[i](),1500));
+  const enter=async(i,name)=>{groups[i].add(name);if(groups[i].size===[4,6][i])release[i]();await gates[i];};
+  let phase=0;
+  f.provider.request=async payload=>{
+    const {method,params}=payload;
+    if(phase===0&&['eth_chainId','eth_accounts'].includes(method))await enter(0,method);
+    if(phase===1&&['eth_call','eth_estimateGas','eth_gasPrice','eth_getBalance','eth_getTransactionCount'].includes(method))
+      await enter(1,method==='eth_getTransactionCount'?method+params[1]:method);
+    return original(payload);
+  };
+  const fetcher=async(url,init)=>{
+    if(phase===0&&(!init.method||init.method==='GET')){
+      await enter(0,url.endsWith('/session')?'session':'journal');
+      if(groups[0].size===4)phase=1;
+    }
+    if(init.method==='PUT'){
+      assert.equal(groups[0].size,4,'initial reads must overlap');
+      assert.equal(groups[1].size,6,'simulation, Gas, balance and both nonces must overlap');phase=2;
+    }
+    return f.fetcher(url,init);
+  };
+  try{
+    const result=await sendProductTransaction({provider:f.provider,config,transaction:transaction(),action:'deposit',fetcher,onState:s=>states.push(s.status)});
+    assert.equal(result.status,'confirmed');
+    assert.deepEqual(states.slice(0,4),['preparing','recording-intent','authorizing','awaiting-signature']);
+    assert(f.calls.findIndex(x=>x.url?.endsWith('/market')&&x.method==='PUT')<f.calls.findIndex(x=>x.url?.endsWith('/market/arm')));
+    assert(f.calls.findIndex(x=>x.url?.endsWith('/market/arm'))<f.calls.findIndex(x=>x.method==='eth_sendTransaction'));
+    assert.equal(f.calls.filter(x=>x.method==='eth_sendTransaction').length,1);
+  }finally{timers.forEach(clearTimeout);release.forEach(resolve=>resolve());}
+});
+
+test('failed parallel simulation drains reads and retains the wallet lane without signing',async()=>{
+  const f=fixture({simulationFail:true}), original=f.provider.request.bind(f.provider);
+  let release, balanceStarted;
+  const waiting=new Promise(resolve=>{release=resolve;}), started=new Promise(resolve=>{balanceStarted=resolve;});
+  f.provider.request=async payload=>{
+    if(payload.method==='eth_getBalance'){balanceStarted();await waiting;}
+    return original(payload);
+  };
+  let settled=false;
+  const send=f.send().then(()=>assert.fail('simulation must fail'),error=>{assert.match(error.message,/simulation/);settled=true;});
+  const timer=setTimeout(release,1500);
+  try{
+    await started;
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(settled,false,'failure must wait for already-started reads');
+    await assert.rejects(f.send(),/另一笔交易/);
+    assert(!f.calls.some(x=>x.method==='PUT'||x.method==='eth_sendTransaction'));
+  }finally{release();clearTimeout(timer);await send;}
+});
+
+test('a rejected chain read drains its concurrent account read before releasing the send lane',async()=>{
+  const f=fixture();let release, accountsStarted;
+  const waiting=new Promise(resolve=>{release=resolve;}), started=new Promise(resolve=>{accountsStarted=resolve;});
+  f.provider.request=async({method})=>{
+    if(method==='eth_chainId')throw new Error('chain unavailable');
+    if(method==='eth_accounts'){accountsStarted();await waiting;return [account];}
+    assert.fail(`Unexpected request after identity failure: ${method}`);
+  };
+  let settled=false;
+  const send=f.send().then(()=>assert.fail('identity failure must reject'),error=>{assert.match(error.message,/chain unavailable/);settled=true;});
+  const timer=setTimeout(release,1500);
+  try{
+    await started;await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(settled,false);
+    await assert.rejects(f.send(),/另一笔交易/);
+    assert(!f.calls.some(x=>x.method==='PUT'));
+  }finally{release();clearTimeout(timer);await send;}
+});
