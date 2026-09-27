@@ -49,7 +49,8 @@ test('both official collections and recent IDs are pinned, rechecked and sorted 
   assert.equal(result.snapshot.blockHash, hash);
   assert.deepEqual(result.candidates.map(item => item.tokenId), ['4', '1', '2', '3']);
   assert.deepEqual(fixture.observed, [1n, 2n, 3n, 4n]);
-  const plan = planBudgetAcquisition({ budgetWei: '500', official: result.candidates, firsto: [],
+  const plan = planBudgetAcquisition({ budgetWei: '500', absoluteCapWei: '500', unitCapWei: '4',
+    official: result.candidates, firsto: [],
     snapshot: result.snapshot, now });
   assert.deepEqual(plan.selected.map(item => item.tokenId), [4n, 1n, 2n]);
   assert.equal(plan.refundableWei + plan.treasuryFeeWei + plan.spentWei, 500n);

@@ -25,10 +25,13 @@ const order = (left, right) => left.costWei < right.costWei ? -1 : left.costWei 
  * Each source must declare complete coverage for the pinned block. Price and NFT
  * identity still require a fresh check in every on-chain purchase transaction.
  */
-export function planBudgetAcquisition({ budgetWei, official = [], firsto = [], snapshot,
+export function planBudgetAcquisition({ budgetWei, absoluteCapWei, unitCapWei, official = [], firsto = [], snapshot,
   firstoCoverage, maxMachines = 256, now = Date.now() } = {}) {
   const budget = exact(budgetWei, 'budgetWei');
+  const absoluteCap = exact(absoluteCapWei, 'absoluteCapWei');
+  const unitCap = exact(unitCapWei, 'unitCapWei');
   need(budget > 0n && budget % 100n === 0n, 'Budget must fund exactly 100 integer shares.');
+  need(absoluteCap > 0n && unitCap > 0n, 'Miner price caps must be positive.');
   need(Number.isInteger(maxMachines) && maxMachines > 0 && maxMachines <= 256, 'Invalid machine page limit.');
   need(snapshot && snapshot.complete === true && Number.isSafeInteger(snapshot.blockNumber) && snapshot.blockNumber > 0
     && /^0x[0-9a-fA-F]{64}$/.test(snapshot.blockHash ?? '')
@@ -55,9 +58,10 @@ export function planBudgetAcquisition({ budgetWei, official = [], firsto = [], s
       const unverifiedWeight = exact(candidate.unverifiedWeight, 'unverifiedWeight');
       const costWei = exact(candidate.costWei, 'costWei');
       const machineCapWei = exact(candidate.machineCapWei, 'machineCapWei');
+      const calculatedCap = unitCap * verifiedWeight < absoluteCap ? unitCap * verifiedWeight : absoluteCap;
       need(candidate.venue === venue && candidate.verified === true && candidate.mining === true
         && candidate.optimal === false && verifiedWeight > 0n && unverifiedWeight === 0n
-        && costWei > 0n && costWei <= machineCapWei
+        && machineCapWei === calculatedCap && costWei > 0n && costWei <= calculatedCap
         && candidate.snapshotBlock === snapshot.blockNumber && candidate.snapshotHash === snapshot.blockHash,
       'Unverified or over-cap market candidate.');
       need(candidate.seller && ADDRESS.test(candidate.seller)
@@ -90,7 +94,7 @@ export function planBudgetAcquisition({ budgetWei, official = [], firsto = [], s
   // from unspent funds; Firsto's buyer fee is already included in costWei.
   const treasuryFeeWei = officialSpentWei / 100n < unusedWei ? officialSpentWei / 100n : unusedWei;
   return Object.freeze({ snapshot: Object.freeze({ ...snapshot }), selected: Object.freeze(selected),
-    budgetWei: budget, spentWei, officialSpentWei, treasuryFeeWei,
+    budgetWei: budget, absoluteCapWei: absoluteCap, unitCapWei: unitCap, spentWei, officialSpentWei, treasuryFeeWei,
     refundableWei: unusedWei - treasuryFeeWei, remainingWei: unusedWei,
     truncated: selected.length === maxMachines });
 }

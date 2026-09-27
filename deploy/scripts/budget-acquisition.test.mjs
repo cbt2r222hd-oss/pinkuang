@@ -13,7 +13,8 @@ const miner = (id, cost, venue = 'official', extra = {}) => ({ collection, token
   snapshotBlock: snapshot.blockNumber, snapshotHash: snapshot.blockHash,
   ...(venue === 'firsto' ? { signedAskVerified: true } : {}), ...extra });
 const plan = (budgetWei, official, firsto = [], other = {}) => planBudgetAcquisition({
-  budgetWei: String(budgetWei), official, firsto, snapshot, firstoCoverage, now, ...other,
+  budgetWei: String(budgetWei), absoluteCapWei: '1000', unitCapWei: '10',
+  official, firsto, snapshot, firstoCoverage, now, ...other,
 });
 
 test('a fixed 100-share BNB budget buys cheapest official miners first, then Firsto, and refunds exact remainder', () => {
@@ -67,12 +68,15 @@ test('unverified, mismatched, changed or over-cap miners block an actionable pla
     assert.throws(() => plan(1000, [miner(1, 100, 'official', changes)]));
   assert.throws(() => plan(1000, [], [miner(1, 100, 'firsto', { signedAskVerified: false })]));
   assert.throws(() => plan(1000, [miner(1, 100, 'official', { askWei: '99' })]));
+  assert.throws(() => plan(1000, [miner(1, 100, 'official', { machineCapWei: '100000' })]),
+    /Unverified or over-cap/, 'a supplied cap cannot override the reviewed per-weight pricing policy');
 });
 
 test('large exact Wei values never pass through floating-point arithmetic', () => {
   const budget = (1n << 200n) / 100n * 100n;
   const cost = budget - 99n;
-  const result = plan(budget, [miner(1, cost, 'official', { machineCapWei: cost.toString() })]);
+  const result = plan(budget, [miner(1, cost, 'official', { machineCapWei: cost.toString() })], [],
+    { absoluteCapWei: cost.toString(), unitCapWei: cost.toString() });
   assert.equal(result.spentWei, cost);
   assert.equal(result.treasuryFeeWei, 99n);
   assert.equal(result.refundableWei, 0n);
