@@ -251,7 +251,7 @@ export default function LivePlatform() {
     [pending, setPending] = useState(null),
     [recoveryHash, setRecoveryHash] = useState("");
   const [query, setQuery] = useState(""),
-    [filter, setFilter] = useState("all"),
+    [filter, setFilter] = useState("Funding"),
     [sort, setSort] = useState("funded"),
     [filtersOpen, setFiltersOpen] = useState(false),
     [detailTab, setDetailTab] = useState("asset"),
@@ -661,7 +661,7 @@ export default function LivePlatform() {
   }, [client, account, route.route, route.pool, detail, loading, refresh]);
 
   useEffect(() => {
-    if (route.route !== "market") return;
+    if (!["market", "pools", "detail"].includes(route.route)) return;
     setCapacityNow(Date.now());
     const timer = setInterval(() => setCapacityNow(Date.now()), 15_000);
     return () => clearInterval(timer);
@@ -675,8 +675,8 @@ export default function LivePlatform() {
 
   useEffect(() => {
     let cancelled = false;
-    setPoolCapacity({});
-    if (!client || !config || loading || !['pools', 'detail'].includes(route.route)) return;
+    if (!client || !config) { setPoolCapacity({}); return; }
+    if (loading || !['pools', 'detail'].includes(route.route)) return;
     const rows = route.route === 'detail' ? (detail ? [detail] : []) : pools;
     if (!rows.length) return;
     const provider = createReadOnlyHttpProvider(config);
@@ -685,6 +685,8 @@ export default function LivePlatform() {
       while (!cancelled && next < rows.length) {
         const row = rows[next++];
         if (!row?.trusted || !row.params || row.unitPriceWei === null) continue;
+        const key = row.pool.toLowerCase();
+        setPoolCapacity(previous => ({ ...previous, [key]: { ...previous[key], loading: true } }));
         const quote = await readShareDailyCapacityPrice(provider, {
           factory: config.factory, pool: row.pool, pricePerUnitWei: row.unitPriceWei,
           allowUnownedTarget: ['Funding', 'Funded'].includes(row.status),
@@ -1288,6 +1290,17 @@ export default function LivePlatform() {
       ? sumKnown(positions, "claimableBEM")
       : null,
     poolBnb = positionsLoaded ? sumKnown(positions, "bnbOwed") : null;
+  const currentPoolQuote = p => {
+    const quote = p && poolCapacity[p.pool.toLowerCase()];
+    return quote?.available && quote.validUntil > capacityNow
+      && quote.collection.toLowerCase() === p.params?.circuits?.toLowerCase()
+      && quote.tokenId === p.params?.circuitId?.toString() ? quote : null;
+  };
+  const poolQuotePlaceholder = p => !["pools", "detail"].includes(route.route) ? "—" : poolCapacity[p.pool.toLowerCase()]?.loading
+    ? L("读取中…", "Loading…")
+    : <button className="text-button" onClick={() => setPoolQuoteRevision(value => value + 1)}>
+      {L("重新读取", "Retry")}
+    </button>;
   const filtered = pools
     .filter(
       (p) =>
@@ -1299,7 +1312,10 @@ export default function LivePlatform() {
           .includes(query.toLowerCase()),
     )
     .sort((a, b) =>
-      sort === "price"
+      sort === "capacity"
+        ? compare(currentPoolQuote(a)?.marketReferencePriceWei,
+          currentPoolQuote(b)?.marketReferencePriceWei)
+        : sort === "price"
         ? compare(a.unitPriceWei, b.unitPriceWei)
         : sort === "id"
           ? compareToken(a.tokenId, b.tokenId)
@@ -1320,19 +1336,19 @@ export default function LivePlatform() {
         </Button>
       </div>
     ) : null;
-  const poolTable = (rows, holdings = false) => (
+  const poolTable = (rows, holdings = false, hideStatus = false) => (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
             <th>{L("矿机 / 项目", "Miner / pool")}</th>
-            <th>{L("状态", "Status")}</th>
+            {!hideStatus && <th>{L("状态", "Status")}</th>}
             <th>
               {holdings ? L("我的份额", "My shares") : L("已募集", "Funded")}
             </th>
             <th>{L("每份金额", "Price per share")}</th>
             <th>{L("预计日产 BEM", "Estimated BEM / day")}</th>
-            <th>{L("Firsto 日产能价", "Firsto daily capacity price")}</th>
+            <th>{L("日产能价", "Daily capacity price")}</th>
             <th />
           </tr>
         </thead>
@@ -1350,20 +1366,20 @@ export default function LivePlatform() {
                   </span>
                 </button>
               </td>
-              <td>
+              {!hideStatus && <td>
                 <StateBadge state={p.status} L={L} />
-              </td>
+              </td>}
               <td>
                 {holdings ? (p.shares?.toString() ?? "—") : (p.funded ?? "—")} /
                 100
               </td>
               <td className="num">{displayPreciseAmount(p.unitPriceWei)} BNB</td>
-              <td>{poolCapacity[p.pool.toLowerCase()]?.available
-                ? `${displayPreciseAmount(poolCapacity[p.pool.toLowerCase()].estimated24hAtomic, 8)} BEM`
-                : '—'}</td>
-              <td className="num" title={L('单位：BNB / (BEM/天)', 'Unit: BNB / (BEM/day)')}>{poolCapacity[p.pool.toLowerCase()]?.available && poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei !== null
-                ? displayPreciseAmount(poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei)
-                : '—'}</td>
+              <td>{currentPoolQuote(p)
+                ? `${displayPreciseAmount(currentPoolQuote(p).estimated24hAtomic, 8)} BEM`
+                : poolQuotePlaceholder(p)}</td>
+              <td className="num" title={L('单位：BNB / (BEM/天)', 'Unit: BNB / (BEM/day)')}>{currentPoolQuote(p)?.marketReferencePriceWei != null
+                ? displayPreciseAmount(currentPoolQuote(p).marketReferencePriceWei)
+                : poolQuotePlaceholder(p)}</td>
               <td>
                 {holdings && p.shares > 0n && <button className="btn secondary" disabled={loading || busy || !!pending || !shareListingView(p).allowed}
                   onClick={() => openAction('list', p)} aria-label={L(`挂单 ${p.name} #${p.tokenId}`, `List ${p.name} #${p.tokenId}`)}>
@@ -1454,7 +1470,7 @@ export default function LivePlatform() {
   function renderGovernance() {
     return <section className="panel"><LiveGovernance
       key={`${detail?.pool || ''}:${account || ''}`}
-      selectedPool={detail?.pool} config={config} account={account} wallet={wallet}
+      selectedPool={detail?.pool} capacityQuote={currentPoolQuote(detail)} config={config} account={account} wallet={wallet}
       readProvider={client?.provider} disabled={loading || busy || !!pending}
       onConnect={connect} onError={problem => setError(textError(problem))}
       onAction={sendGovernanceAction} /></section>;
@@ -1845,10 +1861,10 @@ export default function LivePlatform() {
                 <div className="live-toolbar">
                   <div className="tabs">
                     {[
-                      ["all", "项目总览", "Overview"],
                       ["Funding", "募集中", "Funding"],
                       ["Active", "挖矿中", "Operating"],
                       ["Listed", "整机出售中", "For sale"],
+                      ["all", "项目总览", "Overview"],
                     ].map(([id, zh, en]) => (
                       <button
                         key={id}
@@ -1897,6 +1913,9 @@ export default function LivePlatform() {
                         <option value="price">
                           {L("每份金额从低到高", "Lowest price per share")}
                         </option>
+                        <option value="capacity">
+                          {L("日产能价从低到高", "Lowest daily capacity price")}
+                        </option>
                         <option value="id">
                           {L("矿机编号从低到高", "Lowest miner ID")}
                         </option>
@@ -1910,8 +1929,7 @@ export default function LivePlatform() {
                     </small>
                   </div>
                 )}
-                {poolTable(filtered)}
-                <p className="subtle-note">{L('Firsto 日产能价单位：BNB / (BEM/天)，随市场变化；无有效报价时显示 —。', 'Firsto daily capacity price is in BNB / (BEM/day) and changes with the market; unavailable quotes show —.')}</p>
+                {poolTable(filtered, false, filter === "Funding")}
                 {moreButton(poolCursor, "pools")}
               </section>
             </>
@@ -2003,8 +2021,8 @@ export default function LivePlatform() {
                             : L(...statuses[detail.status])}
                         </span>
                         <span>
-                          {L("预计日产", "Estimated daily output")}：{poolCapacity[detail.pool.toLowerCase()]?.available
-                            ? displayPreciseAmount(poolCapacity[detail.pool.toLowerCase()].estimated24hAtomic, 8)
+                          {L("预计日产", "Estimated daily output")}：{currentPoolQuote(detail)
+                            ? displayPreciseAmount(currentPoolQuote(detail).estimated24hAtomic, 8)
                             : '—'} BEM
                         </span>
                       </div>
@@ -2211,9 +2229,8 @@ export default function LivePlatform() {
                       <small>BNB / {L("份", "share")}</small>
                     </div>
                     <p className="order-rule purchase-explanation">
-                      {L('Firsto 日产能参考价', 'Firsto daily capacity reference')}：{poolCapacity[detail.pool.toLowerCase()]?.available
-                        && poolCapacity[detail.pool.toLowerCase()].marketReferencePriceWei !== null
-                        ? `${displayPreciseAmount(poolCapacity[detail.pool.toLowerCase()].marketReferencePriceWei)} BNB / (BEM/${L('天', 'day')})`
+                      {L('日产能参考价', 'Daily capacity reference')}：{currentPoolQuote(detail)?.marketReferencePriceWei != null
+                        ? `${displayPreciseAmount(currentPoolQuote(detail).marketReferencePriceWei)} BNB / (BEM/${L('天', 'day')})`
                         : '—'}
                     </p>
                     <p className="order-rule purchase-explanation">
@@ -2227,8 +2244,8 @@ export default function LivePlatform() {
                         "为确保购机成功，用户会按矿机出售价格额外预付 10%；购机成功后余款按照份额等比退还",
                         "To help complete the miner purchase, subscribers prepay an extra 10% of its sale price. After a successful purchase, the remaining funds are refunded in proportion to their shares.",
                       ) : L(
-                        `本池募集总额 ${amount(detail.params?.targetRaise)} BNB，购机价格上限 ${amount(detail.params?.priceCap)} BNB；购机后的余款按份额记入可领取余额。`,
-                        `This pool raises ${amount(detail.params?.targetRaise)} BNB with a ${amount(detail.params?.priceCap)} BNB purchase cap. Remaining funds after purchase are credited to holders proportionally.`,
+                        `本池募集总额 ${displayPreciseAmount(detail.params?.targetRaise)} BNB，购机价格上限 ${displayPreciseAmount(detail.params?.priceCap)} BNB；购机后的余款按份额记入可领取余额。`,
+                        `This pool raises ${displayPreciseAmount(detail.params?.targetRaise)} BNB with a ${displayPreciseAmount(detail.params?.priceCap)} BNB purchase cap. Remaining funds after purchase are credited to holders proportionally.`,
                       )}
                     </p>
                     {detail.status === "Funding" ? (
@@ -2261,7 +2278,7 @@ export default function LivePlatform() {
                       <>
                         <div className="ownership">
                           <span>{L("整机售价", "Miner sale price")}</span>
-                          <strong>{amount(governance?.salePrice)} BNB</strong>
+                          <strong>{displayPreciseAmount(governance?.salePrice)} BNB</strong>
                         </div>
                         <Button
                           disabled={loading ||
@@ -2300,7 +2317,7 @@ export default function LivePlatform() {
                         onClick={() => openAction("withdrawBnb", detail)}
                       >
                         {L("领取", "Claim")}{" "}
-                        {amount(account ? detail.bnbOwed : null)} BNB
+                        {displayPreciseAmount(account ? detail.bnbOwed : null)} BNB
                       </Button>
                       {detail.status === "Active" && (
                         <Button
@@ -3092,6 +3109,7 @@ export default function LivePlatform() {
   );
 }
 function compare(a, b) {
+  if (a == null && b == null) return 0;
   if (a == null) return 1;
   if (b == null) return -1;
   return BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0;
