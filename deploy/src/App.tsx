@@ -3,6 +3,7 @@ import { ArrowDownToLine, ArrowRight, ArrowUpRight, Blocks, Check, CheckCheck, C
 import MarketPage from './MarketPage';
 import PricingPanel from './PricingPanel';
 import WalletQrChoice from './WalletQrChoice';
+import LegacyCutover from './LegacyCutover';
 import { displayDecimal, displayUnits } from './display';
 import { DeploymentEngine, LIBRARY_NAMES, INTEGRATED_TRANSACTION_COUNT, preflight, validateArtifacts, PROTOCOL_ADDRESSES, type ArtifactBundle, type DeploymentInput, type DeploymentSnapshot, type PreflightReport } from './deployment';
 import { migrateLegacyDeployment } from './legacy-deployment';
@@ -279,6 +280,7 @@ export default function App() {
 
         {tab === 'deploy' && <>
           <div className="journey"><div className={wallet ? 'finished' : 'current'}><span>{wallet ? <Check size={16}/> : '01'}</span><section><b>连接钱包</b><small>{wallet ? '钱包已连接' : '确认部署账户'}</small></section></div><i/><div className={report || snapshot ? 'finished' : wallet ? 'current' : ''}><span>{report || snapshot ? <Check size={16}/> : '02'}</span><section><b>检查配置</b><small>核对角色与链上依赖</small></section></div><i/><div className={complete ? 'finished' : snapshot ? 'current' : ''}><span>{complete ? <Check size={16}/> : '03'}</span><section><b>部署与验证</b><small>{complete ? '已完成链上核验' : '确认交易，保存结果'}</small></section></div></div>
+          {(complete || latestArchivedComplete) && <LegacyCutover wallet={selected?.provider || null} account={wallet?.address || null} chainId={wallet?.chainId || null}/>}
           <div className="deploy-layout"><div className="left-column">
             <section className="card config-card"><div className="card-heading"><div><span className="section-icon"><Blocks size={19}/></span><h2>部署配置</h2></div><span className="subtle-tag">单钱包模式</span></div>
               <div className="network-select"><span className="network-logo">◆</span><div><b>BNB Smart Chain</b><small>主网 · Chain ID 56</small></div><span className="live-tag">MAINNET</span><LockKeyhole size={15}/></div>
