@@ -10,7 +10,7 @@
 - 核心页面及预算项目目录、详情、子机分页和份额订单显示重试次数；成功时恢复真实数据，耗尽时保留明确错误及手动重读按钮。错误不能转成“没有项目”。
 - 页面、钱包账户或钱包实例变化会取消旧轮次的后续调度，并拒绝其结果；所有钱包、预览、交易和签名操作均不在此自动重试范围内。
 
-验证命令：`node --test scripts/*.test.mjs`；`NEXT_PUBLIC_BASE_PATH=/bemine-v2` 构建后，运行 `scripts/read-retry-browser-check.mjs`。本次单测 259 项通过，浏览器记录另附于工作区 `outputs/pinkuang-mainnet-readiness-20260928/read-recovery-browser/`。离线浏览器仅使用模拟 RPC/API，不签名或发送主网交易；线上验收须单独记录。
+验证命令：`node --test scripts/*.test.mjs`；`NEXT_PUBLIC_BASE_PATH=/bemine-v2` 构建后，运行 `scripts/read-retry-browser-check.mjs` 与 `scripts/portfolio-browser-check.mjs`。本次单测 259 项、23 页构建、恢复浏览器 7 项及原预算浏览器 15 项均通过。记录位于工作区 `outputs/pinkuang-mainnet-readiness-20260928/read-recovery-browser/` 与 `read-recovery-portfolio-browser/`。离线浏览器仅使用模拟 RPC/API，不签名或发送主网交易；线上验收须单独记录。
 
 ## 主网多机完整流程测试前的待修限制
 

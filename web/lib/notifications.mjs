@@ -1,3 +1,4 @@
+import { displayAmount } from './amount-display.mjs';
 const ADDRESS = /^0x[0-9a-f]{40}$/i;
 export const NOTIFICATION_BOT = 'BEMineNotifyBot';
 export const sameNotificationAccount = (a, b) => ADDRESS.test(a ?? '') && ADDRESS.test(b ?? '') && a.toLowerCase() === b.toLowerCase();
@@ -63,8 +64,7 @@ export function notificationMessage(item, locale = 'en') {
   if (/^\d{1,78}$/.test(p.circuitId ?? '')) lines.push(`${zh ? '矿机' : 'Miner'} #${p.circuitId}`);
   if (/^\d{1,78}$/.test(p.proposalId ?? '')) lines.push(`${zh ? '提案' : 'Proposal'} #${p.proposalId}`);
   if (['proposal', 'reminder_6h', 'reminder_1h', 'listed'].includes(kind) && /^\d{1,78}$/.test(p.priceWei ?? '')) {
-    const n = BigInt(p.priceWei), whole = n / 10n ** 18n, fraction = (n % (10n ** 18n)).toString().padStart(18, '0').slice(0, 5).replace(/0+$/, '');
-    const price = n > 0n && whole === 0n && !fraction ? '<0.00001' : `${whole}${fraction ? `.${fraction}` : ''}`;
+    const price = displayAmount(p.priceWei, 18);
     lines.push(`${zh ? '出售价格' : 'Sale price'}: ${price} BNB`);
   }
   if (['proposal', 'reminder_6h', 'reminder_1h'].includes(kind)) {
