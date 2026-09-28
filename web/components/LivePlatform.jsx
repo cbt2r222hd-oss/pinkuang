@@ -1277,8 +1277,8 @@ export default function LivePlatform() {
               <td>{poolCapacity[p.pool.toLowerCase()]?.available
                 ? `${displayPreciseAmount(poolCapacity[p.pool.toLowerCase()].estimated24hAtomic, 8)} BEM`
                 : '—'}</td>
-              <td>{poolCapacity[p.pool.toLowerCase()]?.available && poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei !== null
-                ? `${displayPreciseAmount(poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei)} BNB / (BEM/天)`
+              <td className="num" title={L('单位：BNB / (BEM/天)', 'Unit: BNB / (BEM/day)')}>{poolCapacity[p.pool.toLowerCase()]?.available && poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei !== null
+                ? displayPreciseAmount(poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei)
                 : '—'}</td>
               <td>
                 {holdings && p.shares > 0n && <button className="btn secondary" disabled={loading || busy || !!pending || !shareListingView(p).allowed}
@@ -1824,6 +1824,7 @@ export default function LivePlatform() {
                   </div>
                 )}
                 {poolTable(filtered)}
+                <p className="subtle-note">{L('Firsto 日产能价单位：BNB / (BEM/天)，随市场变化；无有效报价时显示 —。', 'Firsto daily capacity price is in BNB / (BEM/day) and changes with the market; unavailable quotes show —.')}</p>
                 {moreButton(poolCursor, "pools")}
               </section>
             </>
