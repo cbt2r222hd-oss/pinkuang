@@ -102,11 +102,11 @@ def verify_release():
     assert command(['/usr/bin/node','-p','process.versions.node.split(".")[0]']).strip()=='24'
     return manifest
 
-def http(path,method='GET',payload=None,public=False):
+def http(path,method='GET',payload=None,public=False,timeout_s=20):
     if public:
         assert method=='GET' and payload is None
-        result=subprocess.run(['curl','--silent','--show-error','--max-time','20','--noproxy','*','--resolve','tapeout.cc.cd:443:127.0.0.1',
-                               '--write-out','\n%{http_code}','https://tapeout.cc.cd/pinkuang-deploy-v2'+path],capture_output=True,timeout=25)
+        result=subprocess.run(['curl','--silent','--show-error','--max-time',str(timeout_s),'--noproxy','*','--resolve','tapeout.cc.cd:443:127.0.0.1',
+                               '--write-out','\n%{http_code}','https://tapeout.cc.cd/pinkuang-deploy-v2'+path],capture_output=True,timeout=timeout_s+2)
         assert result.returncode==0,'Local TLS/SNI HTTPS probe failed'
         body,status=result.stdout.rsplit(b'\n',1);return int(status),body
     request=urllib.request.Request('http://127.0.0.1:4174'+path,data=json.dumps(payload).encode() if payload is not None else None,
@@ -114,6 +114,20 @@ def http(path,method='GET',payload=None,public=False):
     try:
         with urllib.request.urlopen(request,timeout=20) as response:return response.status,response.read()
     except urllib.error.HTTPError as error:return error.code,error.read()
+
+def wait_public_release(manifest):
+    # systemctl reload reports signal delivery before nginx's new workers accept
+    # requests. Require exact bytes, allowing only a bounded propagation window.
+    expected=manifest['files']['dist/index.html']['sha256'];last='no response'
+    for attempt in range(10):
+        try:
+            status,body=http('/',public=True,timeout_s=3)
+            actual=sha(body);last='HTTP '+str(status)+' SHA256 '+actual
+            if status==200 and actual==expected:return
+        except (OSError,urllib.error.URLError,subprocess.TimeoutExpired,AssertionError):
+            last='HTTPS probe unavailable'
+        if attempt<9:time.sleep(0.5)
+    raise RuntimeError('New HTTPS route did not converge to the reviewed release: '+last)
 
 def verify_http(manifest,public=False):
     for path,file in [('/','dist/index.html'),('/deployment-artifacts.json','dist/deployment-artifacts.json')]:
@@ -190,6 +204,7 @@ def main():
         # Reload can take effect even if its command subsequently reports an
         # error. Rollback must reload the restored original in that case too.
         reload_attempted=True;command(['systemctl','reload','nginx'])
+        wait_public_release(manifest)
         verify_http(manifest,public=True);assert_legacy(expected)
         new=service('pinkuang-deploy-v2.service');assert new['ActiveState']=='active' and new['User']=='pinkuang-v2' and int(new['MainPID'])>0
         listeners=command(['ss','-H','-ltn']);matching=[line for line in listeners.splitlines() if re.search(r':4174\s',line)]

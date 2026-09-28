@@ -2,6 +2,8 @@
 
 本文件与 [统一交接](INTEGRATION_HANDOFF.md) 一起阅读。主分支目前仍是初始化版本，实际整合代码在 `codex/contracts-v2-integration`，审阅入口为 [PR #29](https://github.com/jianfengliao774-sketch/pinkuang/pull/29)。两仓、三台电脑的来源和保留规则已记录，不能从旧设计分支整体覆盖本分支。
 
+**部署入口已上线：[拼矿 v2 部署台](https://tapeout.cc.cd/pinkuang-deploy-v2/)**。运行时 `f64b366` 的 CI 与外网文件校验通过；真实钱包登录和 16 笔链上部署尚未执行，详见 [发布验收](release-preparation-2026-09-28.md)。
+
 ## 本次部署对象
 
 - BSC 主网，chainId 56；新建 `integrated-v2`，共 **16 笔**确认。包含单机和多矿机预算项目两套图，共用时间锁。

@@ -6,8 +6,10 @@ import hashlib
 import json
 import re
 import stat
+import subprocess
 import types
 import unittest
+import urllib.error
 
 
 SOURCE = (Path(__file__).parent / 'activation-v2.remote.py.template').read_text(encoding='utf8')
@@ -79,6 +81,7 @@ def run_case(fault=None):
              'user': types.SimpleNamespace(pw_uid=77, pw_gid=77), 'manifest': {}, 'expected': {},
              'CONFIG': {'artifactDigest': '0x' + 'a' * 64}, 'rid': 'v2-test-only',
              'command': command, 'http': lambda _: (200, b'ok'), 'verify_http': verify_http,
+             'wait_public_release': lambda _: None,
              'assert_legacy': assert_legacy, 'no_links': lambda _: None,
              'replace_site': lambda data, _stat: setattr(site, 'data', data),
              'exclusive': lambda path, data, _mode: state['files'].__setitem__(str(path), data),
@@ -148,6 +151,36 @@ class RollbackTests(unittest.TestCase):
         self.assertEqual(state['loaded'], b'candidate')
         self.assertTrue(state['printed'][-1]['activated'])
 
+
+class RoutePropagationTests(unittest.TestCase):
+    def exercise(self, responses):
+        function=next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name=='wait_public_release')
+        scope={'sha':lambda data:hashlib.sha256(data).hexdigest(),'urllib':urllib,'subprocess':subprocess}
+        state={'requests':0,'waits':0}
+        def http(path,**options):
+            self.assertEqual(path,'/');self.assertEqual(options,{'public':True,'timeout_s':3})
+            value=responses[min(state['requests'],len(responses)-1)];state['requests']+=1
+            if isinstance(value,Exception):raise value
+            return value
+        def sleep(seconds):
+            self.assertEqual(seconds,0.5);state['waits']+=1
+        scope.update(http=http,time=types.SimpleNamespace(sleep=sleep))
+        exec(compile(ast.Module(body=[function],type_ignores=[]),'actual-route-propagation','exec'),scope)
+        manifest={'files':{'dist/index.html':{'sha256':hashlib.sha256(b'reviewed').hexdigest()}}}
+        return lambda:scope['wait_public_release'](manifest),state
+
+    def test_old_worker_404_and_wrong_200_never_count_as_ready(self):
+        run,state=self.exercise([(404,b'old route'),(200,b'old html'),(200,b'reviewed')]);run()
+        self.assertEqual(state,{'requests':3,'waits':2})
+
+    def test_persistent_wrong_content_remains_a_failed_activation(self):
+        run,state=self.exercise([(200,b'wrong html')])
+        with self.assertRaisesRegex(RuntimeError,'did not converge'):run()
+        self.assertEqual(state,{'requests':10,'waits':9})
+
+    def test_transient_connection_error_is_bounded_and_still_requires_exact_bytes(self):
+        run,state=self.exercise([OSError('reload window'),(200,b'reviewed')]);run()
+        self.assertEqual(state,{'requests':2,'waits':1})
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
