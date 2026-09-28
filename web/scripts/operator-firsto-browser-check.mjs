@@ -125,7 +125,7 @@ try {
   await page.getByRole('button', { name: '先查官网并预览购机', exact: true }).click();
   await modal.waitFor();
   await page.evaluate(account => window.ethereum.__emit('accountsChanged', [account]), FIXTURE_OTHER_ACCOUNT);
-  await page.getByText('此页面仅限授权运营人员', { exact: true }).waitFor();
+  await page.waitForURL(/#home$/);
   assert.equal(await modal.count(), 0); assert.deepEqual(forbidden, []);
   checks.push('account switch invalidates Firsto procurement preview without signing');
   assert.deepEqual(errors, []);

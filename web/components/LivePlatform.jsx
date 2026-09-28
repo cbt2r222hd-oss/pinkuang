@@ -292,6 +292,10 @@ export default function LivePlatform() {
       : operator.status === 'error' ? 'unavailable' : 'denied';
 
   useEffect(() => {
+    if (route.route === 'operator' && ['disconnected', 'denied'].includes(operatorAccess)) location.hash = 'home';
+  }, [route.route, operatorAccess]);
+
+  useEffect(() => {
     const service = createWalletDiscovery(window, setWallets);
     discovery.current = service;
     setWalletUiReady(true);
@@ -2521,7 +2525,7 @@ export default function LivePlatform() {
               )}
             </>
           )}
-          {route.route === 'operator' && (hasOperatorAccess ? <>
+          {route.route === 'operator' && !['disconnected', 'denied'].includes(operatorAccess) && (hasOperatorAccess ? <>
             {heading(L('运营工作台', 'Pool operations'), L('创建矿池、购机与管理矿机。', 'Create pools, purchase and manage miners.'))}
             {isOperator && <LiveOperator key={`${config?.factory}:${account}:${walletRevision}:${refresh}`} config={config} wallet={wallet} account={account}
               operator={operator} disabled={loading || busy || !!pending} onSend={sendAdminAction}

@@ -82,7 +82,7 @@ try {
     assert.equal(abi.PoolFactory.parseTransaction(latest.params[0]).args[0].targetRaise, 2200000000000000100n);
     checks.push('editing another field clears auto mode without rounding the retained exact fundraising value');
     await page.evaluate(account => window.ethereum.__emit('accountsChanged', [account]), FIXTURE_OTHER_ACCOUNT);
-    await page.getByText('此页面仅限授权运营人员', { exact: true }).waitFor();
+    await page.waitForURL(/#home$/);
     assert.equal(await page.getByRole('dialog', { name: '确认运营操作' }).count(), 0);
     assert.equal(fixture.controls.sentTransactions.length, 0);
     checks.push('account switch invalidates auto-filled creation preview without signing');
