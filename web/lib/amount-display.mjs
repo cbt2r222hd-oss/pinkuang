@@ -10,6 +10,15 @@ export function displayAmount(value, decimals = 18) {
   return `${negative && milli !== 0n ? '-' : ''}${whole}.${(milli % 1000n).toString().padStart(3, '0')}`;
 }
 
+/** Round the maximum payable Gas upward, so a positive cost never displays as zero. */
+export function displayGasFee(wei) {
+  const value = BigInt(wei);
+  if (value < 0n) throw new Error('Invalid Gas fee');
+  const unit = 10n ** 13n;
+  const rounded = (value + unit - 1n) / unit;
+  return `${rounded / 100000n}.${(rounded % 100000n).toString().padStart(5, '0')}`;
+}
+
 /** Decimal input is a presentation source only; preserve its original elsewhere. */
 export function displayDecimal(value) {
   if (value === null || value === undefined || value === '') return '—';

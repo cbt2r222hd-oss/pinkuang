@@ -65,7 +65,7 @@ import {
 } from "../lib/live-transactions.mjs";
 import { prepareProductAction } from "../lib/live-actions.mjs";
 import { shareListingView } from "../lib/share-listing-view.mjs";
-import { displayDecimal } from "../lib/amount-display.mjs";
+import { displayDecimal, displayGasFee } from "../lib/amount-display.mjs";
 import { abi, readPoolSnapshot } from "../lib/chain-client.mjs";
 import {
   amount,
@@ -233,6 +233,7 @@ export default function LivePlatform() {
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [transactionStage, setTransactionStage] = useState(null),
+    [transactionGasWei, setTransactionGasWei] = useState(null),
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
     [refresh, setRefresh] = useState(0);
@@ -697,7 +698,10 @@ export default function LivePlatform() {
     const reported = typeof state === 'string' ? state : state.status;
     const stage = reported === 'pending' && typeof state === 'object' && !state.hash ? 'needs-verification' : reported;
     setTransactionStage(stage);
-    setMessage(L(...(transactionLabels[stage] || transactionLabels.rechecking)));
+    const gasWei = stage === 'awaiting-signature' && typeof state === 'object' ? state.maxGasWei : null;
+    setTransactionGasWei(gasWei ?? null);
+    const label = L(...(transactionLabels[stage] || transactionLabels.rechecking));
+    setMessage(gasWei == null ? label : `${label} · ${L('Gas 费用上限', 'Maximum Gas fee')} ${displayGasFee(gasWei)} BNB`);
   }
   async function connectJournal({ inspect = true, onState } = {}) {
     const context = walletEpoch.current;
@@ -2529,6 +2533,7 @@ export default function LivePlatform() {
             {heading(L('运营工作台', 'Pool operations'), L('创建矿池、购机与管理矿机。', 'Create pools, purchase and manage miners.'))}
             {isOperator && <LiveOperator key={`${config?.factory}:${account}:${walletRevision}:${refresh}`} config={config} wallet={wallet} account={account}
               operator={operator} disabled={loading || busy || !!pending} onSend={sendAdminAction}
+              gasFeeWei={transactionGasWei}
               onRefresh={() => setRefresh(value => value + 1)}/>}
             <LivePortfolios config={config} provider={client?.provider} account={account} wallet={wallet} mode="operator" locale={locale} operatorVerified={isPortfolioOperator}
               disabled={loading || busy || !!pending} onConnect={connect} onSend={sendPortfolio}

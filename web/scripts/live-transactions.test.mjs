@@ -24,11 +24,11 @@ function fixture(options={}){
     if(method==='eth_accounts'||method==='eth_requestAccounts')return [state.account];
     if(method==='personal_sign')return `0x${'12'.repeat(65)}`;
     if(method==='eth_call'){if(state.simulationFail)throw new Error('simulation reverted');return '0x';}
-    if(method==='eth_getTransactionCount')return `0x${(params[1]==='pending'?state.pendingNonce:state.nonce).toString(16)}`;
-    if(method==='eth_getBalance')return `0x${state.balance.toString(16)}`;
+    if(method==='eth_getTransactionCount')return state.quantityNumbers?Number(params[1]==='pending'?state.pendingNonce:state.nonce):`0x${(params[1]==='pending'?state.pendingNonce:state.nonce).toString(16)}`;
+    if(method==='eth_getBalance')return state.quantityNumbers?Number(state.balance):`0x${state.balance.toString(16)}`;
     if(method==='eth_getCode')return state.accountCode??'0x';
-    if(method==='eth_gasPrice')return `0x${state.price.toString(16)}`;
-    if(method==='eth_estimateGas')return `0x${state.gas.toString(16)}`;
+    if(method==='eth_gasPrice')return state.quantityNumbers?Number(state.price):`0x${state.price.toString(16)}`;
+    if(method==='eth_estimateGas')return state.quantityNumbers?Number(state.gas):`0x${state.gas.toString(16)}`;
     if(method==='eth_sendTransaction'){
       assert(state.record,'Server intent ACK must precede wallet send');
       if(state.rejectWallet)throw Object.assign(new Error('rejected'),{code:4001});
@@ -132,6 +132,26 @@ test('deposit uses exact integer payment, ACK before one wallet send, and verifi
   const ack=f.calls.findIndex(x=>x.url?.endsWith('/market')&&x.method==='PUT');
   assert(ack<f.calls.findIndex(x=>x.method==='eth_sendTransaction'));
   assert(!f.calls.some(x=>['personal_sign','eth_requestAccounts'].includes(x.method)));
+});
+
+test('wallet safe-number RPC quantities are accepted without changing the zero-value create-pool transaction',async()=>{
+  const f=fixture({chain:56,quantityNumbers:true,balance:1000000000000000n});
+  const data=abi.PoolFactory.encodeFunctionData('createPool',[{
+    circuits:addr(5),circuitId:13043n,targetRaise:44000000000000000n,priceCap:40000000000000000n,
+    directSeller:addr(0),directPrice:0n,fundingDeadline:2000000000n,purchaseDeadline:2000172800n,
+  }]);
+  const result=await sendProductTransaction({provider:f.provider,config,transaction:{from:account,to:factory,chainId:'0x38',data,value:'0x0'},
+    action:'createPool',fetcher:f.fetcher});
+  assert.equal(result.status,'confirmed');
+  const sends=f.calls.filter(x=>x.method==='eth_sendTransaction');
+  assert.equal(sends.length,1);assert.equal(sends[0].params[0].value,'0x0');
+});
+
+test('unsafe numeric wallet balance is rejected before an intent is written or a wallet is prompted',async()=>{
+  const f=fixture({quantityNumbers:true,balance:10n**25n});
+  await assert.rejects(f.send(),/钱包 BNB 余额不是精确的非负整数/);
+  assert.equal(f.state.record,null);
+  assert(!f.calls.some(x=>x.method==='eth_sendTransaction'));
 });
 
 test('without durable ACK, session, simulation, nonce, funds or gas checks no wallet send occurs',async()=>{

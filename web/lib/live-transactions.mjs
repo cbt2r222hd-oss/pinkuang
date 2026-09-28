@@ -12,13 +12,18 @@ const active = new Set();
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 const requireValue = (condition, message) => { if (!condition) throw new Error(message); };
 const address = value => { const result = getAddress(value); requireValue(result !== ZERO, '不能使用零地址。'); return result; };
-const exact = value => {
-  requireValue(typeof value === 'bigint' || typeof value === 'string' && /^(?:0|[1-9]\d*|0x[0-9a-f]+)$/i.test(value), '交易金额必须使用精确整数。');
+const exact = (value, label = '交易金额') => {
+  requireValue(typeof value === 'bigint' || typeof value === 'string' && /^(?:0|[1-9]\d*|0x[0-9a-f]+)$/i.test(value), `${label}必须使用精确整数。`);
   const result = BigInt(value); requireValue(result >= 0n && result < 2n ** 256n, '整数超出合约范围。'); return result;
 };
+// Some EIP-1193 wallets return small RPC quantities as numbers. Accept only values
+// that JavaScript can represent exactly; never coerce an imprecise Wei amount.
+const rpcQuantity = (value, label) => typeof value === 'number'
+  ? (requireValue(Number.isSafeInteger(value) && value >= 0, `${label}不是精确的非负整数。`), BigInt(value))
+  : exact(value, label);
 /** Timestamp checkpoints can require new storage between estimation and inclusion. Unused Gas is not charged. */
 export function productGasLimit(estimate) {
-  const amount = exact(estimate);
+  const amount = rpcQuantity(estimate, 'Gas 估算');
   requireValue(amount > 0n, 'Gas 估算无效。');
   const proportional = (amount * 120n + 99n) / 100n;
   const checkpointReserve = amount + 100000n;
@@ -45,7 +50,7 @@ export async function requireWallet(provider, account) {
     chain: () => provider.request({ method: 'eth_chainId' }),
     accounts: () => provider.request({ method: 'eth_accounts' }),
   });
-  requireValue(exact(chain) === 56n, '请将钱包切换至 BSC 主网。');
+  requireValue(rpcQuantity(chain, '钱包链号') === 56n, '请将钱包切换至 BSC 主网。');
   requireValue(Array.isArray(accounts) && same(accounts[0], account), '钱包账户已变化，请重新连接后确认。');
   return address(accounts[0]);
 }
@@ -55,7 +60,7 @@ export async function connectWallet(provider) {
   const accounts = await provider.request({ method: 'eth_requestAccounts' });
   requireValue(Array.isArray(accounts) && accounts.length, '钱包未提供账户。');
   const owner = address(accounts[0]);
-  if (exact(await provider.request({ method: 'eth_chainId' })) !== 56n) {
+  if (rpcQuantity(await provider.request({ method: 'eth_chainId' }), '钱包链号') !== 56n) {
     try {
       await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x38' }] });
     } catch (error) {
@@ -118,7 +123,7 @@ function normalize(config, transaction, action) {
   const budgetTarget = typeof action === 'object' && ['portfolioFactory', 'portfolio', 'portfolioMarket'].includes(action?.targetType);
   requireValue(!budgetTarget || config.kind === 'integrated-v2' && config.portfolioFactory && config.portfolioMarket, '预算部署尚未核验。');
   const factory = address(budgetTarget ? config.portfolioFactory : config.factory), target = address(transaction.to), account = address(transaction.from);
-  requireValue(exact(transaction.chainId) === 56n, '交易目标或网络错误。');
+  requireValue(exact(transaction.chainId, '交易链号') === 56n, '交易目标或网络错误。');
   const targetType = budgetTarget ? same(target, factory) ? 'portfolioFactory' : same(target, config.portfolioMarket) ? 'portfolioMarket' : 'portfolio'
     : same(target, factory) ? 'factory' : config.shareMarket && same(target, config.shareMarket) ? 'market' : 'pool';
   requireValue(!budgetTarget || targetType === action.targetType, '预算操作目标类型不一致。');
@@ -126,7 +131,7 @@ function normalize(config, transaction, action) {
     : targetType === 'factory' ? abi.PoolFactory : targetType === 'pool' ? abi.PoolVault : abi.ShareMarket;
   const allowed = targetType === 'portfolioFactory' ? new Set(['createPortfolio']) : targetType === 'portfolio' ? PORTFOLIO_ACTIONS
     : targetType === 'factory' ? FACTORY_ACTIONS : targetType === 'pool' ? POOL_ACTIONS : MARKET_ACTIONS;
-  const value = exact(transaction.value ?? '0'), data = transaction.data;
+  const value = exact(transaction.value ?? '0', '交易金额'), data = transaction.data;
   requireValue(typeof data === 'string' && /^0x(?:[0-9a-f]{2}){4,2048}$/i.test(data), '交易 calldata 格式错误。');
   const decoded = contract.parseTransaction({ data, value });
   const kind = typeof action === 'string' ? action : action?.kind;
@@ -218,7 +223,7 @@ export async function cancelPendingNonce({ provider, config = {}, account, onSta
     requireValue(tx && same(tx.from, owner) && same(tx.to, owner) && tx.chainId === '0x38'
       && tx.nonce === toQuantity(nonce) && tx.data === '0x' && tx.value === '0x0'
       && tx.gas === '0x5208' && tx.type === '0x0', '取消交易必须是原 nonce 的零金额自转。');
-    const gasPrice = exact(tx.gasPrice), gas = 21_000n;
+    const gasPrice = exact(tx.gasPrice, '取消交易 Gas 单价'), gas = 21_000n;
     requireValue(gasPrice > 0n && gasPrice <= 3_000_000_000n && gasPrice <= exact(config.maxGasPriceWei ?? '3000000000')
       && gas * gasPrice <= exact(config.maxTransactionGasWei ?? '10000000000000000'), '取消交易 Gas 费用超出页面限制。');
     const cancellation = ack.record.cancellationRequests?.at(-1);
@@ -234,10 +239,10 @@ export async function cancelPendingNonce({ provider, config = {}, account, onSta
       provider.request({ method: 'eth_getBalance', params: [owner, 'latest'] }),
       readPending({ account: owner, config, fetcher }),
     ]);
-    requireValue(exact(latest) === nonce && exact(pending) >= nonce && exact(pending) <= nonce + 1n,
+    requireValue(rpcQuantity(latest, '钱包最新 nonce') === nonce && rpcQuantity(pending, '钱包待处理 nonce') >= nonce && rpcQuantity(pending, '钱包待处理 nonce') <= nonce + 1n,
       '原 nonce 已变化或钱包还有其他待处理交易，请先核对钱包交易哈希。');
     requireValue(code === '0x', '此钱包不支持页面内取消，请使用钱包自身的恢复功能。');
-    requireValue(exact(balance) >= gas * gasPrice, 'BNB 余额不足以支付取消交易的 Gas。');
+    requireValue(rpcQuantity(balance, '钱包 BNB 余额') >= gas * gasPrice, 'BNB 余额不足以支付取消交易的 Gas。');
     requireValue(current.revision === ack.revision && current.record?.nonce === record.nonce
       && same(current.record.account, owner), '待处理记录已变化，请重新核对后再取消。');
     await provider.request({ method: 'eth_call', params: [{ from: owner, to: owner, value:'0x0',data:'0x',gas:'0x5208' }, 'latest'] });
@@ -291,11 +296,11 @@ export async function sendProductTransaction({ provider, config, transaction, ac
       price: () => provider.request({ method: 'eth_gasPrice' }),
       balance: () => provider.request({ method: 'eth_getBalance', params: [account, 'latest'] }),
     });
-    const nonce = exact(latest), gas = productGasLimit(estimate), gasPrice = exact(price);
-    requireValue(nonce === exact(pending) && nonce <= BigInt(Number.MAX_SAFE_INTEGER), '钱包存在其他待确认交易，请先在钱包中处理。');
+    const nonce = rpcQuantity(latest, '钱包最新 nonce'), gas = productGasLimit(estimate), gasPrice = rpcQuantity(price, '钱包 Gas 单价');
+    requireValue(nonce === rpcQuantity(pending, '钱包待处理 nonce') && nonce <= BigInt(Number.MAX_SAFE_INTEGER), '钱包存在其他待确认交易，请先在钱包中处理。');
     requireValue(gas > 0n && gas <= exact(config.maxGasLimit ?? '5000000') && gasPrice > 0n
       && gasPrice <= exact(config.maxGasPriceWei ?? '3000000000') && gas * gasPrice <= exact(config.maxTransactionGasWei ?? '10000000000000000'), 'Gas 费用超出页面限制，请稍后重试。');
-    requireValue(exact(balance) >= value + gas * gasPrice, 'BNB 余额不足以支付款项和 Gas。');
+    requireValue(rpcQuantity(balance, '钱包 BNB 余额') >= value + gas * gasPrice, 'BNB 余额不足以支付款项和 Gas。');
     const prepared = { version: 2, chainId: 56, account, factory, target, targetType, nonce: Number(nonce),
       action: normalized.action, data, value: value.toString(), gas: gas.toString(), gasPrice: gasPrice.toString(), submittedAt: new Date().toISOString() };
     emit(onState, { status: 'recording-intent' });
@@ -313,7 +318,7 @@ export async function sendProductTransaction({ provider, config, transaction, ac
     record = permit.record; revision = permit.revision;
     await requireWallet(provider, account);
     const [lastNonce, pendingNonce] = await Promise.all(['latest','pending'].map(tag => provider.request({ method: 'eth_getTransactionCount', params: [account, tag] })));
-    requireValue(exact(lastNonce) === nonce && exact(pendingNonce) === nonce, '签名前钱包 nonce 已变化，原意图已保留，请核对。');
+    requireValue(rpcQuantity(lastNonce, '签名前最新 nonce') === nonce && rpcQuantity(pendingNonce, '签名前待处理 nonce') === nonce, '签名前钱包 nonce 已变化，原意图已保留，请核对。');
     emit(onState, { status: 'awaiting-signature', record, gasLimit: gas.toString(), gasPriceWei: gasPrice.toString(), maxGasWei: (gas * gasPrice).toString() });
     hash = await provider.request({ method: 'eth_sendTransaction', params: [{ ...unsigned, chainId: '0x38', nonce: toQuantity(nonce), gas: toQuantity(gas), gasPrice: toQuantity(gasPrice), type: '0x0' }] });
     requireValue(typeof hash === 'string' && HASH.test(hash), '钱包未返回有效哈希，发送结果待核对。');
