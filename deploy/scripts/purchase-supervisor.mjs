@@ -52,10 +52,19 @@ function loadSigner(provider) {
   const file = process.env.KEEPER_PRIVATE_KEY_FILE;
   if (!file) throw new Error('Set KEEPER_PRIVATE_KEY_FILE to a private 0600 credential file before --send.');
   const path = resolve(file), stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw new Error('Keeper credential must be a regular private file (0600).');
+  if (!isPrivateCredential(path, stat, process.env.CREDENTIALS_DIRECTORY)) throw new Error('Keeper credential must be a private regular file.');
   const key = readFileSync(path, 'utf8').trim();
   if (!/^0x[0-9a-f]{64}$/i.test(key)) throw new Error('Keeper credential is invalid.');
   return new Wallet(key, provider);
+}
+
+export function isPrivateCredential(path, stat, credentialsDirectory) {
+  if (!stat.isFile() || stat.isSymbolicLink()) return false;
+  const mode = stat.mode & 0o777;
+  if (mode === 0o600 || mode === 0o400) return true;
+  return mode === 0o440 && stat.uid === 0 && credentialsDirectory
+    && path === resolve(credentialsDirectory, 'keeper.key')
+    && path.startsWith('/run/credentials/');
 }
 
 async function refreshPools(provider, options, known) {
