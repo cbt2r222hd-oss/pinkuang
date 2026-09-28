@@ -31,3 +31,7 @@ The seven cases cover a partially effective start/reload, an already restored co
 The current operator's local-only driver is `outputs/pinkuang-mainnet-readiness-20260928/execute-v2-activation.py` in that workstation's task outputs, not a repository runtime dependency. That driver defaults to dry run and requires an explicit `--execute` for a chosen phase. Other computers should use their own reviewed SSH transport with strict host-key verification; do not copy workstation credentials into this repository.
 
 Separate journal databases do not provide nonce coordination across two simultaneous callers of the same real wallet. During actual deployment, avoid concurrently sending from that wallet through legacy write routes or other programs. All real-wallet, new-graph, product-index and mobile-wallet acceptance remains a separate step.
+For an already-running v2 deployment console, use the separate [product update runbook](PRODUCT-UPDATE.md) and `product-v2-update.remote.py.template`. It preserves the existing signing journal, introduces the independent dual-factory index and `/bemine-v2/`, and requires reviewed immutable package manifests. Do not reuse the first-install activation flow to update a live journal.
+# 已运行站点的热修复
+
+已发布用户站和索引后，使用 [RUNTIME-HOTFIX.md](RUNTIME-HOTFIX.md) 更新现有 v2 runtime/index，保留产品目录、journal 和 index 数据库。

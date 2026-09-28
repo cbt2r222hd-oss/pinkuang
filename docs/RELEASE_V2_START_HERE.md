@@ -2,7 +2,7 @@
 
 本文件与 [统一交接](INTEGRATION_HANDOFF.md) 一起阅读。主分支目前仍是初始化版本，实际整合代码在 `codex/contracts-v2-integration`，审阅入口为 [PR #29](https://github.com/jianfengliao774-sketch/pinkuang/pull/29)。两仓、三台电脑的来源和保留规则已记录，不能从旧设计分支整体覆盖本分支。
 
-**部署入口已上线：[拼矿 v2 部署台](https://tapeout.cc.cd/pinkuang-deploy-v2/)**。运行时 `f64b366` 的 CI 与外网文件校验通过；用户已完成 16 笔链上部署；两套合约图和逐笔回执已只读验证，公共地址见 [新部署清单](deployments/integrated-v2-frontend-manifest-20260928.json)。新产品接入与剩余停用旧创建入口步骤，详见 [发布验收](release-preparation-2026-09-28.md)。
+**用户入口已上线：[拼矿 v2 主页](https://tapeout.cc.cd/bemine-v2/)，[拼矿 v2 部署台](https://tapeout.cc.cd/pinkuang-deploy-v2/)**。用户静态站源码为 `7b5176a769cf330ecebb609fbcacc5dd64a4306f`，后台与索引运行源码为 `c90c25531e57bbcb89d710704625a65618275ae2`；2026-09-28 05:05 UTC 已补齐实时币价路由和索引并发读取，独立双工厂索引跨多个完成周期通过规范区块检查。用户已完成 16 笔链上部署，公共地址见 [新部署清单](deployments/integrated-v2-frontend-manifest-20260928.json)。本次上线不等于真实钱包业务交易已验收；发布证据与旧工厂停建步骤见 [本轮上线记录](validation/product-live-2026-09-28/README.md)。
 
 ## 本次部署对象
 
