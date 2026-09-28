@@ -236,6 +236,7 @@ export default function LivePlatform() {
   const [positionsLoaded, setPositionsLoaded] = useState(false);
   const [notificationClaim, setNotificationClaim] = useState(null);
   const [readRetry, setReadRetry] = useState(null), [readFailed, setReadFailed] = useState(false);
+  const [cachedPage, setCachedPage] = useState(false);
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [transactionStage, setTransactionStage] = useState(null),
@@ -256,6 +257,7 @@ export default function LivePlatform() {
     [detailTab, setDetailTab] = useState("asset"),
     [marketTab, setMarketTab] = useState("shares");
   const epoch = useRef(0),
+    pageCache = useRef(new WeakMap()),
     capacityEpoch = useRef(0),
     modalRef = useRef(null),
     restoreFocus = useRef(null),
@@ -504,10 +506,48 @@ export default function LivePlatform() {
     let cancelled = false;
     const revision = ++epoch.current;
     const current = () => !cancelled && revision === epoch.current;
+    const accountKey = account?.toLowerCase() || '';
+    const pageKey = JSON.stringify([route.route, route.pool?.toLowerCase() || '', accountKey, marketTab]);
+    const cache = pageCache.current.get(client);
+    const saved = cache?.get(pageKey);
+    const recent = entry => entry && Date.now() - entry.savedAt < 120_000;
+    const shared = ['home', 'pools'].includes(route.route) && !recent(saved)
+      ? [...(cache?.values() || [])].reverse().find(entry => recent(entry) && entry.account === accountKey && entry.result.catalog)
+      : null;
+    const cached = recent(saved) ? saved.result : shared ? { catalog: shared.result.catalog } : null;
+    const showResult = result => {
+      if (result.catalog) {
+        setPools(result.catalog.items.map(viewPool));
+        setPoolCursor(result.catalog.nextCursor);
+        setSource(result.catalog.source);
+      }
+      if (result.stats) setStats(result.stats.data);
+      if (result.positions) {
+        setPositions(result.positions.items.map(viewPool));
+        setPositionCursor(result.positions.nextCursor);
+        setPositionsLoaded(true);
+        setMarketCredit(result.positions.marketBnbOwed);
+      }
+      if (result.detail) {
+        setDetail(viewPool(result.detail.item));
+        setSource(result.detail.source);
+      }
+      if (result.governance) setGovernance(result.governance.data);
+      if (result.orders) {
+        setOrders(result.orders.items);
+        setOrderCursor(result.orders.nextCursor);
+      }
+      if (result.activity) {
+        setActivity(result.activity.items);
+        setActivityCursor(result.activity.nextCursor);
+      }
+      setLoadedAccount(account);
+    };
     const clearRound = progress => {
       setReadRetry(progress.attempt > 1 ? progress : null);
       setReadFailed(false);
-      setLoadedRoute("");
+      setCachedPage(!!cached);
+      setLoadedRoute(cached ? route.route + (route.pool ? `/${route.pool}` : '') : '');
       setLoadedAccount(null);
       setPositionsLoaded(false);
       setPools([]);
@@ -529,6 +569,7 @@ export default function LivePlatform() {
       setPositionCursor(null);
       setOrderCursor(null);
       setActivityCursor(null);
+      if (cached) showResult(cached);
     };
     async function load() {
       return readPageRound(client, { route, account, marketTab });
@@ -537,33 +578,16 @@ export default function LivePlatform() {
       onRetry: progress => { if (current()) setReadRetry(progress); } })
       .then((result) => {
         if (result === READ_CANCELLED || !current()) return;
-        if (result.catalog) {
-          setPools(result.catalog.items.map(viewPool));
-          setPoolCursor(result.catalog.nextCursor);
-          setSource(result.catalog.source);
+        if (result.catalog || result.detail) {
+          let entries = pageCache.current.get(client);
+          if (!entries) { entries = new Map(); pageCache.current.set(client, entries); }
+          entries.delete(pageKey);
+          entries.set(pageKey, { savedAt: Date.now(), account: accountKey, result });
+          if (entries.size > 8) entries.delete(entries.keys().next().value);
         }
-        if (result.stats) setStats(result.stats.data);
-        if (result.positions) {
-          setPositions(result.positions.items.map(viewPool));
-          setPositionCursor(result.positions.nextCursor);
-          setPositionsLoaded(true);
-          setMarketCredit(result.positions.marketBnbOwed);
-        }
-        if (result.detail) {
-          setDetail(viewPool(result.detail.item));
-          setSource(result.detail.source);
-          setDetailPreview(null);
-        }
-        if (result.governance) setGovernance(result.governance.data);
-        if (result.orders) {
-          setOrders(result.orders.items);
-          setOrderCursor(result.orders.nextCursor);
-        }
-        if (result.activity) {
-          setActivity(result.activity.items);
-          setActivityCursor(result.activity.nextCursor);
-        }
-        setLoadedAccount(account);
+        showResult(result);
+        if (result.detail) setDetailPreview(null);
+        setCachedPage(false);
       })
       .catch((e) => {
         if (current()) {
@@ -571,6 +595,13 @@ export default function LivePlatform() {
           setReadFailed(true);
           setPools([]);
           setPositions([]);
+          setStats(null);
+          setDetail(null);
+          setGovernance(null);
+          setOrders([]);
+          setActivity([]);
+          setSource(null);
+          setCachedPage(false);
         }
       })
       .finally(() => {
@@ -645,7 +676,7 @@ export default function LivePlatform() {
   useEffect(() => {
     let cancelled = false;
     setPoolCapacity({});
-    if (!client || !config || !['pools', 'detail'].includes(route.route)) return;
+    if (!client || !config || loading || !['pools', 'detail'].includes(route.route)) return;
     const rows = route.route === 'detail' ? (detail ? [detail] : []) : pools;
     if (!rows.length) return;
     const provider = createReadOnlyHttpProvider(config);
@@ -663,7 +694,7 @@ export default function LivePlatform() {
     };
     void Promise.all(Array.from({ length: Math.min(2, rows.length) }, worker));
     return () => { cancelled = true; };
-  }, [client, route.route, pools, detail, boot, refresh, poolQuoteRevision]);
+  }, [client, route.route, pools, detail, boot, refresh, poolQuoteRevision, loading]);
 
   useEffect(() => {
     const revision = ++capacityEpoch.current;
@@ -1601,6 +1632,9 @@ export default function LivePlatform() {
           {loading && readRetry && <div className="live-notice" role="status">
             <RefreshCw size={18}/><span>{L(`数据暂时未就绪，正在自动重试（${readRetry.attempt}/${readRetry.maxAttempts}）…`,
               `Data is temporarily unavailable. Retrying automatically (${readRetry.attempt}/${readRetry.maxAttempts})…`)}</span>
+          </div>}
+          {loading && cachedPage && <div className="live-notice" role="status">
+            <RefreshCw size={18}/><span>{L('显示上次核验的数据，正在更新；交易需等待最新核对。', 'Showing previously verified data while refreshing; transactions wait for a fresh check.')}</span>
           </div>}
           {error && (
             <div className="live-notice error" role="alert">

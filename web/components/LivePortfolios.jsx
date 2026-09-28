@@ -25,6 +25,7 @@ const names = { deposit:'认购预算份额',withdrawDeposit:'撤回全部认购
 const states = ['募集中','购机期','运行中','出售中','已结束','可退款'];
 const same = (a,b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 const brief = error => error?.shortMessage || error?.message || '预算项目读取未完成。';
+const recentPages = new Map();
 
 /** A parent project owns its miners. Its 100 shares are never counted once per child. */
 export default function LivePortfolios({ config, provider, client, locale, account, wallet, mode = 'pools', initialPool, disabled, onConnect, onSend, onSendQueue, onShare, onBuyChild, operatorVerified = false, refreshKey = 0 }) {
@@ -39,6 +40,7 @@ export default function LivePortfolios({ config, provider, client, locale, accou
   const [dailyReference,setDailyReference]=useState(null),[dailyReferenceError,setDailyReferenceError]=useState(''),[capacitySample,setCapacitySample]=useState(null),[capacityBusy,setCapacityBusy]=useState(false);
   const context=useRef({}), sequence=useRef(0);
   const identity=`${config?.portfolioFactory || ''}:${account || ''}:${mode}:${initialPool || ''}:${refreshKey}`;
+  const cacheKey=JSON.stringify([config?.artifactDigest,config?.portfolioFactory,account?.toLowerCase() || '',mode,initialPool?.toLowerCase() || '']);
   if(context.current.identity!==identity || context.current.provider!==provider || context.current.wallet!==wallet){
     sequence.current++;context.current={identity,provider,wallet};
   }
@@ -50,7 +52,12 @@ export default function LivePortfolios({ config, provider, client, locale, accou
   const selectedCurrent=selected && visibleRows.some(row=>same(row.pool,selected.pool)) && same(selected.account,account || ZeroAddress) ? selected:null;
   const frozen=busy || loading || disabled;
   useEffect(()=>{setListingQuantity(selectedCurrent?.availableShares>0n?selectedCurrent.availableShares.toString():'1');setPrice('');},[selectedCurrent?.pool,selectedCurrent?.availableShares]);
-  useEffect(()=>{setLoadedIdentity('');setOrders([]);setOrderPool(null);setOrderCursor(null);setRows([]);setSelected(null);setPreview(null);setError('');setReadRetry(null);setReadFailed(false);setOperator(null);setCursor(null);setBusy(false);setLoading(false);if(enabled && (!mine || account))void load();},[identity,provider,wallet]);
+  useEffect(()=>{const saved=recentPages.get(cacheKey),cached=saved && Date.now()-saved.savedAt<120_000?saved.result:null;
+    setLoadedIdentity(cached?identity:'');setOrders([]);setOrderPool(null);setOrderCursor(null);setRows(cached?.items || []);
+    setSelected(initialPool?cached?.items[0] || null:null);setChild(initialPool?cached?.items[0]?.children.find(item=>!item.sold)?.pool || '':'');
+    setPreview(null);setError('');setReadRetry(null);setReadFailed(false);
+    setOperator(cached?.operator || null);setCursor(cached?.nextCursor ?? null);setBusy(false);setLoading(false);
+    if(enabled && (!mine || account))void load();},[identity,provider,wallet]);
   useEffect(()=>()=>{sequence.current++;},[]);
   async function refreshCapacity(active=()=>true){
     setCapacityBusy(true);
@@ -78,9 +85,11 @@ export default function LivePortfolios({ config, provider, client, locale, accou
         return readPortfolioPage(config,provider,{account:account || undefined,mine,cursor:nextCursor});
       },ticket);
       if(result===READ_CANCELLED||!current(ticket))return;
+      if(!nextCursor){recentPages.delete(cacheKey);recentPages.set(cacheKey,{savedAt:Date.now(),result});
+        if(recentPages.size>8)recentPages.delete(recentPages.keys().next().value);}
       setRows(previous=>nextCursor? [...previous,...result.items.filter(item=>!previous.some(p=>same(p.pool,item.pool)))]:result.items);
       setLoadedIdentity(identity);setCursor(result.nextCursor);setOperator(result.operator);if(!nextCursor){setSelected(initialPool?result.items[0]:null);if(initialPool)setChild(result.items[0].children.find(c=>!c.sold)?.pool || '');}
-    }catch(problem){if(current(ticket)){setError(brief(problem));setReadFailed(true);if(!nextCursor)setRows([]);}}
+    }catch(problem){if(current(ticket)){setError(brief(problem));setReadFailed(true);if(!nextCursor){setRows([]);setSelected(null);setOperator(null);setLoadedIdentity('');}}}
     finally{if(current(ticket)){setLoading(false);setReadRetry(null);}}
   }
   async function select(row){
