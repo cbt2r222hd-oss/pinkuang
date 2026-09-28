@@ -5,6 +5,7 @@ import { Layers3, RefreshCw, ArrowRight, ChevronDown } from 'lucide-react';
 import { readPortfolioPage, readPortfolioContext, readPortfolio, readPortfolioChildren, readPortfolioOrders, preparePortfolioAction } from '../lib/live-portfolios.mjs';
 import { amount, shortAddress, explorerAddress, explorerTransaction, exportActivityCsv } from '../lib/live-view.mjs';
 import { displayDecimal } from '../lib/amount-display.mjs';
+import { READ_CANCELLED, retryReadRound } from '../lib/read-retry.mjs';
 import { fundingAmount } from '../lib/funding-amount.mjs';
 import LiveYieldChart from './LiveYieldChart';
 import { sameUnsignedIntent } from '../lib/ui-context.mjs';
@@ -26,6 +27,7 @@ export default function LivePortfolios({ config, provider, client, locale, accou
   const T=text=>portfolioText(locale,text);
   const [rows,setRows]=useState([]),[cursor,setCursor]=useState(null),[selected,setSelected]=useState(null),[operator,setOperator]=useState(null);
   const [loading,setLoading]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[preview,setPreview]=useState(null);
+  const [readRetry,setReadRetry]=useState(null),[readFailed,setReadFailed]=useState(false);
   const [loadedIdentity,setLoadedIdentity]=useState(''),[orders,setOrders]=useState([]),[orderCursor,setOrderCursor]=useState(null),[orderPool,setOrderPool]=useState(null);
   const [listingQuantity,setListingQuantity]=useState('1');
   const [quantity,setQuantity]=useState('1'),[recipient,setRecipient]=useState(''),[child,setChild]=useState(''),[price,setPrice]=useState(''),[reference,setReference]=useState('');
@@ -43,44 +45,49 @@ export default function LivePortfolios({ config, provider, client, locale, accou
   const selectedCurrent=selected && visibleRows.some(row=>same(row.pool,selected.pool)) && same(selected.account,account || ZeroAddress) ? selected:null;
   const frozen=busy || loading || disabled;
   useEffect(()=>{setListingQuantity(selectedCurrent?.availableShares>0n?selectedCurrent.availableShares.toString():'1');setPrice('');},[selectedCurrent?.pool,selectedCurrent?.availableShares]);
-  useEffect(()=>{setLoadedIdentity('');setOrders([]);setOrderPool(null);setOrderCursor(null);setRows([]);setSelected(null);setPreview(null);setError('');setOperator(null);setCursor(null);setBusy(false);setLoading(false);if(enabled && (!mine || account))void load();},[identity,provider]);
+  useEffect(()=>{setLoadedIdentity('');setOrders([]);setOrderPool(null);setOrderCursor(null);setRows([]);setSelected(null);setPreview(null);setError('');setReadRetry(null);setReadFailed(false);setOperator(null);setCursor(null);setBusy(false);setLoading(false);if(enabled && (!mine || account))void load();},[identity,provider,wallet]);
   useEffect(()=>()=>{sequence.current++;},[]);
+
+  function retryRead(read,ticket){return retryReadRound(read,{isCurrent:()=>current(ticket),
+    onAttempt:progress=>{if(current(ticket)){setReadFailed(false);setReadRetry(progress.attempt>1?progress:null);}},
+    onRetry:progress=>{if(current(ticket))setReadRetry(progress);}});}
 
   async function load(nextCursor=0){
     const ticket=++sequence.current;setLoading(true);setError('');setPreview(null);
     try{
-      let result;
-      if(initialPool){const ctx=await readPortfolioContext(config,provider);const row=await readPortfolio(ctx,initialPool,account || ZeroAddress);await ctx.canonical();result={items:[row],nextCursor:null,operator:ctx.operator};}
-      else result=await readPortfolioPage(config,provider,{account:account || undefined,mine,cursor:nextCursor});
-      if(!current(ticket))return;
+      const result=await retryRead(async()=>{
+        if(initialPool){const ctx=await readPortfolioContext(config,provider);const row=await readPortfolio(ctx,initialPool,account || ZeroAddress);await ctx.canonical();return {items:[row],nextCursor:null,operator:ctx.operator};}
+        return readPortfolioPage(config,provider,{account:account || undefined,mine,cursor:nextCursor});
+      },ticket);
+      if(result===READ_CANCELLED||!current(ticket))return;
       setRows(previous=>nextCursor? [...previous,...result.items.filter(item=>!previous.some(p=>same(p.pool,item.pool)))]:result.items);
       setLoadedIdentity(identity);setCursor(result.nextCursor);setOperator(result.operator);if(!nextCursor){setSelected(initialPool?result.items[0]:null);if(initialPool)setChild(result.items[0].children.find(c=>!c.sold)?.pool || '');}
-    }catch(problem){if(current(ticket)){setError(brief(problem));if(!nextCursor)setRows([]);}}
-    finally{if(current(ticket))setLoading(false);}
+    }catch(problem){if(current(ticket)){setError(brief(problem));setReadFailed(true);if(!nextCursor)setRows([]);}}
+    finally{if(current(ticket)){setLoading(false);setReadRetry(null);}}
   }
   async function select(row){
     const ticket=++sequence.current;setLoading(true);setError('');setPreview(null);setOrders([]);setOrderPool(null);setOrderCursor(null);
-    try{const ctx=await readPortfolioContext(config,provider);const details=await readPortfolio(ctx,row.pool,account || ZeroAddress);await ctx.canonical();
-      if(current(ticket)){setSelected(details);setChild(details.children.find(c=>!c.sold)?.pool || '');}
-    }catch(problem){if(current(ticket)){setSelected(null);setError(brief(problem));}}
-    finally{if(current(ticket))setLoading(false);}
+    try{const details=await retryRead(async()=>{const ctx=await readPortfolioContext(config,provider);const result=await readPortfolio(ctx,row.pool,account || ZeroAddress);await ctx.canonical();return result;},ticket);
+      if(details!==READ_CANCELLED&&current(ticket)){setSelected(details);setChild(details.children.find(c=>!c.sold)?.pool || '');}
+    }catch(problem){if(current(ticket)){setSelected(null);setError(brief(problem));setReadFailed(true);}}
+    finally{if(current(ticket)){setLoading(false);setReadRetry(null);}}
   }
   async function moreChildren(){
     if(!selectedCurrent)return;const ticket=++sequence.current;setLoading(true);setError('');
-    try{const ctx=await readPortfolioContext(config,provider,selectedCurrent.blockNumber);
+    try{const more=await retryRead(async()=>{const ctx=await readPortfolioContext(config,provider,selectedCurrent.blockNumber);
       if(ctx.block.hash.toLowerCase()!==selectedCurrent.blockHash.toLowerCase())throw new Error('项目区块已变化，请重新展开项目。');
-      const more=await readPortfolioChildren(ctx,selectedCurrent.pool,selectedCurrent.childCount,BigInt(selectedCurrent.children.length));await ctx.canonical();
-      if(current(ticket))setSelected({...selectedCurrent,children:[...selectedCurrent.children,...more]});
-    }catch(problem){if(current(ticket))setError(brief(problem));}finally{if(current(ticket))setLoading(false);}
+      const result=await readPortfolioChildren(ctx,selectedCurrent.pool,selectedCurrent.childCount,BigInt(selectedCurrent.children.length));await ctx.canonical();return result;},ticket);
+      if(more!==READ_CANCELLED&&current(ticket))setSelected({...selectedCurrent,children:[...selectedCurrent.children,...more]});
+    }catch(problem){if(current(ticket)){setError(brief(problem));setReadFailed(true);}}finally{if(current(ticket)){setLoading(false);setReadRetry(null);}}
   }
   async function loadOrders(nextCursor){
     if(!selectedCurrent)return;const target=selectedCurrent.pool,ticket=++sequence.current;setLoading(true);setError('');setPreview(null);
-    try{const result=await readPortfolioOrders(config,provider,target,{cursor:nextCursor});
-      if(current(ticket)){setOrderPool(target);setOrders(previous=>nextCursor?[...previous,...result.items]:result.items);setOrderCursor(result.nextCursor);}
-    }catch(problem){if(current(ticket)){setOrders([]);setOrderPool(null);setError(brief(problem));}}finally{if(current(ticket))setLoading(false);}
+    try{const result=await retryRead(()=>readPortfolioOrders(config,provider,target,{cursor:nextCursor}),ticket);
+      if(result!==READ_CANCELLED&&current(ticket)){setOrderPool(target);setOrders(previous=>nextCursor?[...previous,...result.items]:result.items);setOrderCursor(result.nextCursor);}
+    }catch(problem){if(current(ticket)){setOrders([]);setOrderPool(null);setError(brief(problem));setReadFailed(true);}}finally{if(current(ticket)){setLoading(false);setReadRetry(null);}}
   }
   async function prepare(action,pool=selectedCurrent?.pool){
-    if(!account || !wallet){onConnect?.();return;}const ticket=++sequence.current;setBusy(true);setError('');setPreview(null);
+    if(!account || !wallet){onConnect?.();return;}const ticket=++sequence.current;setBusy(true);setError('');setReadFailed(false);setPreview(null);
     try{const input={config,provider:wallet,account,pool,action};const result=await preparePortfolioAction(input);
       if(current(ticket))setPreview({input:{...input, action: {...action, ...(result.procurement ? { expectedPurchaseWei: result.procurement.priceWei.toString(), frozenOrder: result.procurement.frozenOrder } : {}), ...(result.marketTrade?.seller ? {expectedSeller:result.marketTrade.seller,expectedPricePerUnitWei:result.marketTrade.pricePerUnitWei.toString()}: {})}},result,identity,ticket});
     }catch(problem){if(current(ticket))setError(brief(problem));}finally{if(current(ticket))setBusy(false);}
@@ -102,8 +109,8 @@ export default function LivePortfolios({ config, provider, client, locale, accou
     <div className="portfolio-heading"><div><h2><Layers3 size={21}/>{T("多矿机预算项目")}</h2><p>{T("整个项目共 100 份，共同持有项目内多台矿机。每台矿机的出售单独表决，余款与收益归项目份额持有人。")}</p></div>
       <button className="btn secondary" disabled={!enabled || frozen || mine&&!account} onClick={()=>void load()}><RefreshCw size={15}/>{T("刷新项目")}</button></div>
     {!enabled ? <p role="status">{T("预算项目合约尚未完成部署验收。")}</p> : mine&&!account ? <button className="btn" onClick={onConnect}>{T("连接钱包查看项目权益")}</button> : <>
-      {error&&<p className="portfolio-error" role="alert">{T(error)}</p>}
-      {loading&&<p role="status">{T("正在核对预算项目…")}</p>}
+      {error&&<div className="portfolio-error" role="alert"><p>{T(error)}</p>{readFailed&&<button className="btn secondary" disabled={frozen} onClick={()=>void load()}>{locale==='en'?'Retry portfolio data':'重新读取预算项目'}</button>}</div>}
+      {loading&&<p role="status">{readRetry?(locale==='en'?`Portfolio data is temporarily unavailable. Retrying automatically (${readRetry.attempt}/${readRetry.maxAttempts})…`:`预算数据暂时未就绪，正在自动重试（${readRetry.attempt}/${readRetry.maxAttempts}）…`):T("正在核对预算项目…")}</p>}
       {!loading&&!error&&!visibleRows.length&&<p>{locale==='en'?(mine?'No portfolios related to this wallet.':'No portfolios currently available.'):(mine?'当前没有与你相关的预算项目。':'当前没有预算项目。')}</p>}
       <div className="portfolio-cards">{visibleRows.map(row=><button key={row.pool} className={`portfolio-card${same(selectedCurrent?.pool,row.pool)?' selected':''}`} disabled={frozen} onClick={()=>void select(row)}>
         <strong>{T("预算项目")} {shortAddress(row.pool)}</strong><span>{T(states[Number(row.state)])} · {row.activeChildCount.toString()} {T("台运行 /")} {row.childCount.toString()} {T("台购入")}</span>

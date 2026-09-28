@@ -229,6 +229,7 @@ export default function LivePlatform() {
   const [operator, setOperator] = useState(null);
   const [positionsLoaded, setPositionsLoaded] = useState(false);
   const [notificationClaim, setNotificationClaim] = useState(null);
+  const [readRetry, setReadRetry] = useState(null), [readFailed, setReadFailed] = useState(false);
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [transactionStage, setTransactionStage] = useState(null),
@@ -480,13 +481,15 @@ export default function LivePlatform() {
   useEffect(() => {
     if (!client) return;
     if (route.route === 'notifications') {
-      setLoadedRoute('notifications'); setLoading(false); setError('');
+      setLoadedRoute('notifications'); setLoading(false); setError(''); setReadRetry(null); setReadFailed(false);
       return;
     }
     let cancelled = false;
     const revision = ++epoch.current;
     const current = () => !cancelled && revision === epoch.current;
-    const clearRound = () => {
+    const clearRound = progress => {
+      setReadRetry(progress.attempt > 1 ? progress : null);
+      setReadFailed(false);
       setLoadedRoute("");
       setLoadedAccount(null);
       setPositionsLoaded(false);
@@ -512,7 +515,8 @@ export default function LivePlatform() {
     async function load() {
       return readPageRound(client, { route, account, marketTab });
     }
-    retryReadRound(load, { isCurrent: current, onAttempt: clearRound })
+    retryReadRound(load, { isCurrent: current, onAttempt: clearRound,
+      onRetry: progress => { if (current()) setReadRetry(progress); } })
       .then((result) => {
         if (result === READ_CANCELLED || !current()) return;
         setPools(result.catalog.items.map(viewPool));
@@ -540,6 +544,7 @@ export default function LivePlatform() {
       .catch((e) => {
         if (current()) {
           setError(textError(e));
+          setReadFailed(true);
           setPools([]);
           setPositions([]);
         }
@@ -547,6 +552,7 @@ export default function LivePlatform() {
       .finally(() => {
         if (current()) {
           setLoading(false);
+          setReadRetry(null);
           setLoadedRoute(route.route + (route.pool ? `/${route.pool}` : ""));
         }
       });
@@ -1492,10 +1498,17 @@ export default function LivePlatform() {
               </a>
             </div>
           )}
+          {loading && readRetry && <div className="live-notice" role="status">
+            <RefreshCw size={18}/><span>{L(`数据暂时未就绪，正在自动重试（${readRetry.attempt}/${readRetry.maxAttempts}）…`,
+              `Data is temporarily unavailable. Retrying automatically (${readRetry.attempt}/${readRetry.maxAttempts})…`)}</span>
+          </div>}
           {error && (
             <div className="live-notice error" role="alert">
               <AlertCircle size={18} />
               <span>{error}</span>
+              {readFailed && <Button secondary disabled={loading || busy} onClick={() => setRefresh(value => value + 1)}>
+                {L('重新读取项目', 'Retry project data')}
+              </Button>}
               <button
                 aria-label={L("关闭提示", "Dismiss")}
                 onClick={() => setError("")}

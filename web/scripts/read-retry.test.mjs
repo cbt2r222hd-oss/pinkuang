@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveDataError, fetchLiveJson } from '../lib/live-config.mjs';
-import { READ_CANCELLED, retryReadRound, settleReadRound } from '../lib/read-retry.mjs';
+import { READ_CANCELLED, READ_RETRY_DELAYS_MS, READ_RETRY_MAX_ATTEMPTS, retryReadRound, settleReadRound } from '../lib/read-retry.mjs';
 
 const problem = (code, status) => new LiveDataError(code, 'original failure', { status });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
@@ -61,15 +61,35 @@ test('HTTP 403 status survives fetch wrapping and does not retry', async () => {
   assert.equal(requests, 1);
 });
 
-test('recoverable reads stop at three total attempts and preserve the final error', async () => {
+test('recoverable reads stop at seven attempts with bounded backoff and preserve the final error', async () => {
   for (const error of [problem('http_unavailable', 502), problem('http_unavailable', 503),
     problem('http_unavailable', 504), problem('index_incomplete'), problem('index_stale'), problem('source_changed')]) {
-    let attempts = 0, delays = 0;
+    let attempts = 0; const delays = [];
     await assert.rejects(retryReadRound(async () => { attempts++; throw error; }, {
-      wait: async ms => { assert.equal(ms, 1000); delays++; },
+      wait: async ms => { delays.push(ms); },
     }), actual => actual === error);
-    assert.equal(attempts, 3); assert.equal(delays, 2);
+    assert.equal(attempts, READ_RETRY_MAX_ATTEMPTS); assert.deepEqual(delays, READ_RETRY_DELAYS_MS);
   }
+});
+
+test('a normal 30-second index sync can recover without a manual refresh or rounded data', async () => {
+  let time=0,attempts=0;const progress=[];
+  const result=await retryReadRound(async()=>{attempts++;if(time<30000)throw problem('http_unavailable',503);return {amount:75500000000000001n};},
+    {now:()=>time,wait:async ms=>{time+=ms;},onRetry:state=>progress.push(state)});
+  assert.equal(attempts,7);assert.equal(time,39000);assert.equal(result.amount,75500000000000001n);
+  assert.equal(progress.at(-1).attempt,7);assert.equal(progress.at(-1).maxAttempts,7);
+});
+
+test('elapsed scheduling budget and background-tab timer delay never launch a late round', async () => {
+  const error=problem('http_unavailable',503);
+  let time=0,attempts=0;
+  await assert.rejects(retryReadRound(async()=>{attempts++;time+=30000;throw error;},
+    {now:()=>time,wait:async ms=>{time+=ms;}}),e=>e===error);
+  assert.equal(attempts,2);
+  time=0;attempts=0;
+  await assert.rejects(retryReadRound(async()=>{attempts++;throw error;},
+    {now:()=>time,wait:async()=>{time=46000;}}),e=>e===error);
+  assert.equal(attempts,1);
 });
 
 test('an obsolete route drains its reads but neither retries nor writes to the replacement route', async () => {
