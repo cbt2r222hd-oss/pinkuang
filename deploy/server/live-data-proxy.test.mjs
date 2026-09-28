@@ -85,6 +85,29 @@ test('proxy preserves incomplete index 503 and refuses redirected/HTML/mismatche
   }
 });
 
+test('server reuses only a recent complete public source; browser and private reads stay uncached', async t => {
+  let clock = Date.now(), indexCalls = 0;
+  const source = { chainId: 56, complete: true, unknownReason: null, indexedThrough: 100,
+    indexedBlockHash: `0x${'ab'.repeat(32)}`, checkedAt: new Date(clock).toISOString() };
+  const f = await fixture(t, { now: () => clock, publicSourceTtlMs: 30000,
+    upstream: (_url, init) => {
+      if (init.method === 'POST') return json({ jsonrpc: '2.0', id: JSON.parse(init.body).id, result: '0x38' });
+      indexCalls++;
+      return indexCalls === 1 ? json({ source, data: { items: [] } })
+        : json({ source: { ...source, complete: false, unknownReason: 'index_not_caught_up' }, data: null }, 503);
+    } });
+  assert.equal((await f.get('/api/chain-index/v1/pools')).status, 200);
+  const cached = await f.get('/api/chain-index/health');
+  assert.equal(cached.status, 200);
+  assert.equal(cached.headers.get('x-bemine-server-cache'), 'hit');
+  assert.deepEqual(await cached.json(), { source });
+  assert.equal(indexCalls, 1, 'the server answers health from its own cache');
+  assert.equal((await f.get('/api/chain-index/v1/pools')).status, 503, 'catalog is never served stale');
+  assert.equal((await f.post(rpc())).status, 200, 'RPC is never served stale');
+  clock += 30000;
+  assert.equal((await f.get('/api/chain-index/health')).status, 503, 'expired source is not served');
+});
+
 test('oversized upstream bodies, timeout and exhausted concurrency are bounded', async t => {
   const huge = await fixture(t, { maxResponseBytes: 64, upstream: () => json({ oversized: 'x'.repeat(100) }) });
   assert.equal((await huge.post(rpc())).status, 502);

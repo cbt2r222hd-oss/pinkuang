@@ -26,15 +26,18 @@ export async function readPageRound(client, { route, account, marketTab } = {}) 
   // Operator permissions, quotes and portfolio creation have independent chain reads.
   // A moving public index must not disable unrelated administrative controls.
   if (name === 'operator') return { catalog: null };
+  // The detail itself is a complete, independently verified pool read. Do not
+  // hold it behind unrelated catalog, governance or activity snapshots: those
+  // can cross an index sync boundary while this pool remains perfectly valid.
+  if (name === 'detail' && pool) {
+    const detail = await client.readPool({ pool, account: owner || ZeroAddress });
+    checkedSource(detail);
+    return { detail };
+  }
   const tasks = { catalog: () => client.readPools({ account: owner || ZeroAddress }) };
   if (name === 'home') tasks.stats = () => client.readStats();
   if (owner && ['overview', 'rewards', 'market', 'governance'].includes(name))
     tasks.positions = () => client.readPositions({ account: owner });
-  if (name === 'detail' && pool) {
-    tasks.detail = () => client.readPool({ pool, account: owner || ZeroAddress });
-    tasks.governance = () => client.readGovernance({ pool, account: owner || ZeroAddress });
-    tasks.activity = () => client.readActivity({ pool });
-  }
   if (name === 'market' && (marketTab !== 'mine' || owner))
     tasks.orders = () => client.readOrders(marketTab === 'mine' ? { seller: owner } : { active: true });
   if (['records', 'overview', 'rewards'].includes(name))

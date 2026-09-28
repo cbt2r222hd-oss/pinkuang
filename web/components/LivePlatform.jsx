@@ -215,6 +215,7 @@ export default function LivePlatform() {
     [orders, setOrders] = useState([]),
     [activity, setActivity] = useState([]),
     [source, setSource] = useState(null);
+  const [detailPreview, setDetailPreview] = useState(null);
   const [poolCursor, setPoolCursor] = useState(null),
     [positionCursor, setPositionCursor] = useState(null),
     [orderCursor, setOrderCursor] = useState(null),
@@ -463,7 +464,13 @@ export default function LivePlatform() {
     setPrice("");
     setModal({ type: "action", kind, pool, ...extra });
   };
-  const openDetails = (pool) => go("detail", pool.pool);
+  const openDetails = (pool) => {
+    // This row was verified by the preceding catalog read. Show its public
+    // facts immediately while the new detail read runs; it cannot authorize a
+    // wallet action and is never persisted in browser storage.
+    setDetailPreview(pool);
+    go("detail", pool.pool);
+  };
   const date = (value) =>
     value == null
       ? "—"
@@ -538,7 +545,11 @@ export default function LivePlatform() {
           setPositionsLoaded(true);
           setMarketCredit(result.positions.marketBnbOwed);
         }
-        if (result.detail) setDetail(viewPool(result.detail.item));
+        if (result.detail) {
+          setDetail(viewPool(result.detail.item));
+          setSource(result.detail.source);
+          setDetailPreview(null);
+        }
         if (result.governance) setGovernance(result.governance.data);
         if (result.orders) {
           setOrders(result.orders.items);
@@ -570,6 +581,22 @@ export default function LivePlatform() {
       epoch.current++;
     };
   }, [client, account, route.route, route.pool, refresh, marketTab]);
+
+  useEffect(() => {
+    if (!client || route.route !== 'detail' || !route.pool || !detail || loading) return;
+    let cancelled = false;
+    const pool = route.pool;
+    const owner = account || ZeroAddress;
+    void client.readGovernance({ pool, account: owner })
+      .then(result => { if (!cancelled) setGovernance(result.data); })
+      .catch(() => { if (!cancelled) setGovernance(null); });
+    void client.readActivity({ pool })
+      .then(result => {
+        if (!cancelled) { setActivity(result.items); setActivityCursor(result.nextCursor); }
+      })
+      .catch(() => { if (!cancelled) { setActivity([]); setActivityCursor(null); } });
+    return () => { cancelled = true; };
+  }, [client, account, route.route, route.pool, detail, loading, refresh]);
 
   useEffect(() => {
     if (route.route !== "market") return;
@@ -1838,17 +1865,25 @@ export default function LivePlatform() {
                 )}
               </Empty>
             ) : !detail ? (
-              <Empty
-                title={
-                  loading
-                    ? L("正在核对矿机信息…", "Checking miner information…")
-                    : L("暂时无法读取该项目", "This project is unavailable")
-                }
+              detailPreview && same(detailPreview.pool, route.pool) ? (
+                <section className="panel detail-summary" aria-label={L('上次核对的矿池资料', 'Previously verified pool information')}>
+                  <div className="detail-heading">
+                    <Chip pool={detailPreview}/>
+                    <div><h1>{detailPreview.name} <span>#{detailPreview.tokenId}</span></h1><small>{shortAddress(detailPreview.pool)}</small></div>
+                    <StateBadge state={detailPreview.status} L={L}/>
+                  </div>
+                  <p>{L('上次核对的每份金额', 'Previously verified price per share')}：
+                    <strong>{displayPreciseAmount(detailPreview.unitPriceWei)} BNB</strong></p>
+                  <p className="subtle-note">{loading
+                    ? L('正在更新链上资料；更新完成后才能认购。', 'Refreshing on-chain data; subscription opens after verification.')
+                    : L('最新资料暂不可用，请刷新后认购。', 'Current data is unavailable; refresh before subscribing.')}</p>
+                </section>
+              ) : <Empty
+                title={loading ? L("正在核对矿机信息…", "Checking miner information…")
+                  : L("暂时无法读取该项目", "This project is unavailable")}
               >
-                {L(
-                  "项目开放并完成链上核对后，才能参与认购。",
-                  "Subscription is available once the project is open and verified.",
-                )}
+                {L("项目开放并完成链上核对后，才能参与认购。",
+                  "Subscription is available once the project is open and verified.")}
               </Empty>
             ) : (
               <>

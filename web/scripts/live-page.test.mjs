@@ -63,8 +63,19 @@ test('route plan preserves public/private filters and only the required branches
     if (route === 'records') assert.equal(f.calls.at(-1).options.account, undefined);
   }
   const f = fixture(); await readPageRound(f.client, { route: { route: 'detail', pool }, account });
-  assert.deepEqual(f.calls.map(row => row.method), ['readPools', 'readPool', 'readGovernance', 'readActivity']);
-  assert(f.calls.slice(1).every(row => row.options.pool === pool));
+  assert.deepEqual(f.calls.map(row => row.method), ['readPool']);
+  assert.equal(f.calls[0].options.pool, pool);
+  assert.equal(f.calls[0].options.account, account);
+});
+
+test('detail becomes ready even when unrelated catalog and governance are unavailable', async () => {
+  const f = fixture(async method => {
+    if (method !== 'readPool') throw new Error('unrelated read must not block detail');
+    return { source, item: { pool } };
+  });
+  const result = await readPageRound(f.client, { route: { route: 'detail', pool }, account });
+  assert.equal(result.detail.item.pool, pool);
+  assert.deepEqual(f.calls.map(row => row.method), ['readPool']);
 });
 
 test('operator page remains usable when the unrelated public index returns 503', async () => {
