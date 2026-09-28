@@ -50,6 +50,7 @@ import { sameUnsignedIntent } from "../lib/ui-context.mjs";
 import { READ_CANCELLED, retryReadRound, settleReadRound } from "../lib/read-retry.mjs";
 import { prepareAdminAction, readOperatorStatus, sameAdminPurchasePreview } from "../lib/live-admin.mjs";
 import ProjectShare from "./ProjectShare";
+import { publicShareBaseForPath } from "../lib/project-share.mjs";
 import { resolveDeployConsoleUrl } from "../lib/deploy-console-url.mjs";
 import { createReadOnlyHttpProvider, loadLiveConfig } from "../lib/live-config.mjs";
 import { readShareDailyCapacityPrice, shareDailyCapacityPriceWei } from "../lib/share-daily-capacity.mjs";
@@ -83,7 +84,7 @@ const deploymentConsoleUrl = resolveDeployConsoleUrl(
   process.env.NEXT_PUBLIC_DEPLOY_CONSOLE_URL,
 );
 const publicBaseUrl =
-  process.env.NEXT_PUBLIC_BEMINE_PUBLIC_URL || "https://tapeout.cc.cd/bemine/";
+  process.env.NEXT_PUBLIC_BEMINE_PUBLIC_URL || publicShareBaseForPath(basePath);
 const navigation = [
   ["home", "拼矿总览", "BEMine overview", Blocks],
   ["overview", "资产总览", "My portfolio", LayoutDashboard],
