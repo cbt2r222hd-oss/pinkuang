@@ -107,7 +107,8 @@ export default function LiveOperator({ config, account, wallet, operator, disabl
       <div className="operator-identity"><span>当前运营钱包</span><strong>{account}</strong><span>Factory</span><strong>{config.factory}</strong></div>
       {!operator.machineRegistry?.supported && <p className="live-notice">当前工厂尚未支持矿机唯一性登记。请等待合约升级后创建新项目；已有项目的读取、退款与提现不受影响。</p>}
       {operator.machineRegistry?.supported && !operator.machineRegistry.ready && <p className="live-notice error">矿机唯一性登记尚未完成，暂不能创建新项目或从 Firsto 采购。</p>}
-      <div className="operator-tabs"><button className={`btn${mode === 'createPool' ? '' : ' secondary'}`} disabled={frozen} onClick={() => switchMode('createPool')}>指定矿机建池</button><button className={`btn${mode === 'createFlexiblePoolChecked' ? '' : ' secondary'}`} disabled={frozen} onClick={() => switchMode('createFlexiblePoolChecked')}>灵活购机报价建池</button></div>
+      <div className="operator-tabs"><button className={`btn${mode === 'createPool' ? '' : ' secondary'}`} disabled={frozen} onClick={() => switchMode('createPool')}>指定单台矿机</button><button className={`btn${mode === 'createFlexiblePoolChecked' ? '' : ' secondary'}`} disabled={frozen} onClick={() => switchMode('createFlexiblePoolChecked')}>单台矿机灵活替代</button><button className="btn secondary" disabled={frozen} onClick={() => document.getElementById('multi-miner-projects')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>多矿机同一项目（100 份）↓</button></div>
+      <p className="subtle-note">当前表单只建单台矿机池。若要用固定 BNB 预算购买多台矿机，请进入下方“多矿机预算项目”；募满后可设置本批最多采购台数。</p>
       {operator.creationPaused && <p className="live-notice error">链上建池已暂停，需要治理权限恢复后才能新建。</p>}
       <OperatorQuotePicker config={config} mode={mode} disabled={frozen || !!preview} onApply={applyQuote}/>
       {autoSelection && <p className="live-notice">已自动填入矿机与募集方案。请核对金额和期限；预览前会重新读取最新报价。</p>}

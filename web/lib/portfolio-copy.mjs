@@ -39,6 +39,7 @@ const en = {
   '链上凭证':'On-chain proof','项目内矿机':'Portfolio miners','项目收益与公开记录':'Portfolio rewards and public records','项目详情':'Portfolio details',
   '预算':'Budget','预算项目':'Portfolio','预算项目。':'portfolios.','预算项目份额市场':'Portfolio share market','预算项目合约尚未完成部署验收。':'Portfolio contracts have not completed deployment verification.',
   '预算项目固定 100 份；总预算、单机绝对上限和单位算力价格上限写入合约，采购不能突破上限。':'Each portfolio has 100 shares. The contract enforces the total budget, per-miner price cap and price cap per verified weight unit.',
+  '先创建共享 100 份的预算项目；募满后在项目中设置本批最多采购台数（1–20 台），从当前合格挂单逐台核验并买入。矿机可能在募集期间售出，因此创建时不锁定具体编号；同一项目可用剩余预算继续采购下一批。':'Create a portfolio with 100 shared units first. After funding, choose up to 20 miners for each batch and verify and purchase them one by one from current eligible listings. Miner listings can sell out during funding, so creation does not lock token IDs; another batch can use any remaining budget.',
   '预算项目每轮只审议一台矿机，下一轮最早':'Each portfolio round considers one miner. The next round can start at',
   '预览 Firsto 购买':'Preview Firsto purchase','预览买入':'Preview buying','预览份额转移':'Preview share transfer','预览出售提案':'Preview sale proposal',
   '预览创建预算项目':'Preview portfolio creation','预览挂卖份额':'Preview share listing','预览认购':'Preview subscription','预览领取预算市场 BNB':'Preview market BNB withdrawal',
