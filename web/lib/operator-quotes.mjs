@@ -1,5 +1,5 @@
 import { Interface, ZeroAddress, getAddress, toQuantity } from 'ethers';
-import { OFFICIAL_COLLECTIONS, fetchQuotePage, fetchMineQuote, fetchCapacityReference, quoteIssue, createQuotePlan } from '../../deploy/src/pricing.ts';
+import { OFFICIAL_COLLECTIONS, MAX_QUOTE_AGE_MS, fetchQuotePage, fetchMineQuote, fetchCapacityReference, quoteIssue, createQuotePlan } from '../../deploy/src/pricing.ts';
 import { createReadOnlyHttpProvider } from './live-config.mjs';
 import { settleReadRound } from './read-retry.mjs';
 import { QUOTE_BASE } from './quote-base.mjs';
@@ -109,6 +109,17 @@ function matchQuoteToMiner(quote, chain) {
   requireValue(same(quote.owner, chain.owner), '矿机持有人已变化，请刷新报价。');
   requireValue(quote.status === 'verified' && quote.taskId === chain.taskId && quote.verifiedWeight === chain.verifiedWeight
     && quote.unverifiedWeight === '0', '矿机任务或权重已变化，请重新获取。');
+}
+
+/** Optional display estimate for an already verified official listing; never gates the purchase route. */
+export async function loadVerifiedCapacityHint(chain, options = {}) {
+  const quote = await fetchMineQuote(chain.collection, chain.tokenId, { baseUrl: QUOTE_BASE, ...options });
+  matchQuoteToMiner(quote, chain);
+  requireValue(!quote.issues.length && quote.source.observedAt > 0
+    && quote.source.observedAt <= Date.now() + 30_000
+    && Date.now() - quote.source.observedAt <= MAX_QUOTE_AGE_MS, 'Firsto 产能来源已过期或不完整。');
+  requireValue(quote.estimated24hAtomic && BigInt(quote.estimated24hAtomic) > 0n, 'Firsto 未提供这台矿机的有效预计日产出。');
+  return Object.freeze({ estimated24hAtomic: quote.estimated24hAtomic, observedAt: quote.source.observedAt });
 }
 
 /** Public quotes are discovery only; an official listing always takes purchase priority. */
