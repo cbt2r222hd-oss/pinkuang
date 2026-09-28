@@ -55,6 +55,7 @@ import { resolveDeployConsoleUrl } from "../lib/deploy-console-url.mjs";
 import { createReadOnlyHttpProvider, loadLiveConfig } from "../lib/live-config.mjs";
 import { readShareDailyCapacityPrice, shareDailyCapacityPriceWei } from "../lib/share-daily-capacity.mjs";
 import { createLiveDataClient } from "../lib/live-data.mjs";
+import { readCurrentPoolMembers } from "../lib/live-members.mjs";
 import {
   connectWallet,
   authenticate,
@@ -213,6 +214,7 @@ export default function LivePlatform() {
     [detail, setDetail] = useState(null),
     [governance, setGovernance] = useState(null),
     [members, setMembers] = useState([]),
+    [membersRead, setMembersRead] = useState({ status: "idle" }),
     [orders, setOrders] = useState([]),
     [activity, setActivity] = useState([]),
     [source, setSource] = useState(null);
@@ -516,6 +518,7 @@ export default function LivePlatform() {
       setDetail(null);
       setGovernance(null);
       setMembers([]);
+      setMembersRead({ status: "idle" });
       setOrders([]);
       setActivity([]);
       setStats(null);
@@ -582,6 +585,33 @@ export default function LivePlatform() {
       epoch.current++;
     };
   }, [client, account, route.route, route.pool, refresh, marketTab]);
+
+  useEffect(() => {
+    if (!client || !config || route.route !== 'detail' || !source) return;
+    let cancelled = false, checking = false;
+    const checkForUpdate = async () => {
+      if (cancelled || checking || document.visibilityState !== 'visible' || loading || busy || modal
+        || Date.now() - Date.parse(source.checkedAt) < 30_000) return;
+      checking = true;
+      try {
+        const response = await fetch(`${config.indexBaseUrl}/health`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const latest = (await response.json()).source;
+        if (!cancelled && latest?.complete === true && latest.chainId === 56
+          && same(latest.factory, config.factory) && Number.isSafeInteger(latest.indexedThrough)
+          && latest.indexedThrough > source.indexedThrough) setRefresh(value => value + 1);
+      } catch {} finally { checking = false; }
+    };
+    const timer = setInterval(() => void checkForUpdate(), 60_000);
+    window.addEventListener('focus', checkForUpdate);
+    document.addEventListener('visibilitychange', checkForUpdate);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener('focus', checkForUpdate);
+      document.removeEventListener('visibilitychange', checkForUpdate);
+    };
+  }, [client, boot, route.route, source, loading, busy, modal]);
 
   useEffect(() => {
     if (!client || route.route !== 'detail' || !route.pool || !detail || loading) return;
@@ -1181,33 +1211,28 @@ export default function LivePlatform() {
     }
   }
   async function readMembers() {
-    if (!client || !detail || !source) return;
+    if (!client || !detail || !config) return;
     const revision = epoch.current;
-    setBusy(true);
+    setMembersRead({ status: "loading" });
     try {
-      const block = `0x${BigInt(source.indexedThrough).toString(16)}`;
-      const result = await client.provider.request({
-        method: "eth_call",
-        params: [
-          {
-            to: detail.pool,
-            data: abi.PoolVault.encodeFunctionData("activeMembers"),
-          },
-          block,
-        ],
+      const result = await readCurrentPoolMembers(client.provider, {
+        factory: config.factory, pool: detail.pool,
       });
-      const addresses = abi.PoolVault.decodeFunctionResult(
-        "activeMembers",
-        result,
-      )[0];
-      if (addresses.length > 100) throw new Error("Unexpected holder count");
-      if (revision === epoch.current) setMembers(addresses);
+      if (revision === epoch.current) {
+        setMembers(result.members);
+        setMembersRead({ status: "ready", blockNumber: result.blockNumber });
+      }
     } catch (e) {
-      if (revision === epoch.current) setError(textError(e));
-    } finally {
-      setBusy(false);
+      if (revision === epoch.current) {
+        setMembers([]);
+        setMembersRead({ status: "error", error: textError(e) });
+      }
     }
   }
+  useEffect(() => {
+    if (route.route === 'detail' && detailTab === 'members' && detail?.pool && client && !loading)
+      void readMembers();
+  }, [client, route.route, detail?.pool, detailTab, source?.indexedThrough, loading]);
   const heading = (title, subtitle, action) => (
     <div className="page-heading">
       <div>
@@ -1962,7 +1987,6 @@ export default function LivePlatform() {
                           className={detailTab === key ? "selected" : ""}
                           onClick={() => {
                             setDetailTab(key);
-                            if (key === "members") void readMembers();
                           }}
                         >
                           {L(zh, en)}
@@ -2103,7 +2127,15 @@ export default function LivePlatform() {
                             ? L("当前认购人数", "Current subscribers")
                             : L("当前持有人", "Current holders")}
                         </h2>
-                        {members.length ? (
+                        {membersRead.status === "loading" ? (
+                          <p className="subtle-note">{L("正在核对最新链上持有人…", "Checking current on-chain holders…")}</p>
+                        ) : membersRead.status === "error" ? (
+                          <div role="alert">
+                            <p>{L("持有人地址暂时无法读取，请重试。", "Holder addresses are temporarily unavailable. Please retry.")}</p>
+                            <p className="subtle-note">{membersRead.error}</p>
+                            <Button secondary onClick={() => void readMembers()}>{L("重新读取持有人", "Retry holders")}</Button>
+                          </div>
+                        ) : membersRead.status === "ready" && members.length ? (
                           members.map((address) => (
                             <a
                               className="live-holder"
@@ -2116,14 +2148,17 @@ export default function LivePlatform() {
                               <ArrowUpRight size={15} />
                             </a>
                           ))
-                        ) : (
+                        ) : membersRead.status === "ready" ? (
                           <Empty
                             title={L(
                               "暂无可显示的持有人地址",
                               "No holder addresses to show",
                             )}
                           />
-                        )}
+                        ) : null}
+                        {membersRead.status === "ready" && <p className="subtle-note">
+                          {L(`最新链上区块 #${membersRead.blockNumber}`, `Current on-chain block #${membersRead.blockNumber}`)}
+                        </p>}
                       </section>
                     )}
                   </div>
