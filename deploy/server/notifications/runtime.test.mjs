@@ -4,6 +4,22 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createNotificationRuntime, startOptionalNotifications } from './runtime.mjs';
+import { COMMUNITY_DESTINATION } from './community-config.mjs';
+
+test('community identity failure cannot disable personal notifications or call the group worker',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'bemine-community-runtime-'));
+  let ticks=0, resolveStatus;
+  const observed=new Promise(resolve=>{resolveStatus=resolve;});
+  const config={dbPath:join(dir,'private','notifications.sqlite'),encryptionKey:'ab'.repeat(32),webhookSecret:'x'.repeat(48),
+    botUsername:'BEMineNotifyBot',publicBaseUrl:'https://example.test/bemine/',factory:`0x${'1'.repeat(40)}`,market:`0x${'2'.repeat(40)}`,
+    indexUrl:'http://127.0.0.1:4180',community:{...COMMUNITY_DESTINATION,photoUrl:'https://example.test/image.jpg'}};
+  const runtime=createNotificationRuntime(config,{source:async()=>{throw new Error('index not ready');},
+    telegram:{request:async method=>method==='getMe'?{id:42,is_bot:true,username:'BEMineNotifyBot'}:{id:-1},sendMessage:async()=>{}},
+    communityWorker:{tick:async()=>{ticks++;return{status:'ok'};}},onStatus:value=>{if(value.status==='community_source_or_delivery_unavailable')resolveStatus(value);}});
+  try {await runtime.start();await observed;assert.equal(ticks,0);assert.equal(runtime.capabilities().enabled,true);
+    assert.equal((await runtime.handleWallet({account:`0x${'3'.repeat(40)}`,method:'GET',path:'/status'})).status,200);
+  }finally{await runtime.close();rmSync(dir,{recursive:true,force:true});}
+});
 
 test('optional notification startup failures never prevent the independent journal from starting', async () => {
   const statuses = [];

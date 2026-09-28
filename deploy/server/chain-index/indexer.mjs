@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { Interface, ZeroAddress, getAddress } from 'ethers';
 import { notificationPage } from './notifications.mjs';
+import { communityPage } from './community.mjs';
 
 const artifactPath = fileURLToPath(new URL('../../public/deployment-artifacts.json', import.meta.url));
 const artifacts = JSON.parse(await readFile(artifactPath, 'utf8'));
@@ -323,6 +324,8 @@ export class ChainIndex {
   }
 
   notifications(options = {}) { return notificationPage(this, interfaces.pool, options); }
+
+  community(options = {}) { return communityPage(this, interfaces.pool, options); }
 
   pools({ cursor = 0, limit = 20 } = {}) {
     integer(cursor, 'cursor'); integer(limit, 'limit', 1);
