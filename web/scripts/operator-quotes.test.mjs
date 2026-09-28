@@ -158,9 +158,9 @@ test('non-official identities are excluded from discovery and cannot reach on-ch
   const rpc = chainFixture(data.quote), api = apiFixture(data);
   const page = await listOperatorQuotes({}, { fetcher: api.fetcher });
   assert.equal(page.rows.length, 0); assert.equal(page.excluded, 1);
-  assert.match(api.requests[0].input, /sort=price_low/);
-  await listOperatorQuotes({ sort: 'daily_capacity_price_low' }, { fetcher: api.fetcher });
-  assert.match(api.requests[1].input, /sort=daily_capacity_price_low/);
+  assert.match(api.requests[0].input, /sort=daily_capacity_price_low/);
+  await listOperatorQuotes({ sort: 'price_low' }, { fetcher: api.fetcher });
+  assert.match(api.requests[1].input, /sort=price_low/);
   await assert.rejects(loadOperatorQuote({ collection: other, tokenId: '16480', provider: rpc.provider, fetcher: api.fetcher }), /官方矿机/);
   await assert.rejects(checkMinerOnchain(rpc.provider, { ...data.quote, collection: other }), /官方矿机/);
   assert.equal(rpc.requests.length, 0);

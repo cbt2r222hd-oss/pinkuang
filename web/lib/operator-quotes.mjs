@@ -48,7 +48,7 @@ export function operatorQuoteError(error) {
   return error?.shortMessage || error?.message || '报价暂时无法读取，请重试。';
 }
 export function listOperatorQuotes(input = {}, options = {}) {
-  return fetchQuotePage({ sort: 'price_low', ...input }, { baseUrl: QUOTE_BASE, ...options });
+  return fetchQuotePage({ sort: 'daily_capacity_price_low', ...input }, { baseUrl: QUOTE_BASE, ...options });
 }
 
 /** A missing selector is an old deployment; transport failures must not downgrade capability. */

@@ -19,7 +19,7 @@ export default function OperatorQuotePicker({ config, mode, disabled, onApply })
   const [extra, setExtra] = useState('10');
   const request = useRef({ sequence: 0, abort: null });
   const invalidate = () => { request.current.abort?.abort(); request.current.sequence += 1; };
-  useEffect(() => { setPage(null); setSelected(null); setCapacityHint(null); setCapacityError(''); setMarketReference(null); setMarketReferenceError(''); return invalidate; }, [config.factory]);
+  useEffect(() => { setPage(null); setSelected(null); setCapacityHint(null); setCapacityError(''); setMarketReference(null); setMarketReferenceError(''); void load(1); return invalidate; }, [config.factory]);
   useEffect(() => { setSelected(null); setCapacityHint(null); setCapacityError(''); setMarketReference(null); setMarketReferenceError(''); setError(''); }, [mode]);
   async function load(number = 1) {
     invalidate(); const sequence = request.current.sequence, abort = new AbortController(); request.current.abort = abort;
@@ -78,7 +78,7 @@ export default function OperatorQuotePicker({ config, mode, disabled, onApply })
       <input aria-label="搜索报价矿机编号" placeholder="输入准确矿机编号；非编号可搜 Firsto" value={query} maxLength={120} disabled={blocked} onChange={event => setQuery(event.target.value)}/>
       <select aria-label="报价矿机系列" value={series} disabled={blocked} onChange={event => setSeries(event.target.value)}><option value="">全部系列</option><option>TapeOut</option><option>Behemoth</option></select>
       <button className="btn secondary" disabled={blocked}><Search size={16}/>查询矿机</button>
-      <button type="button" className="btn secondary" disabled={blocked} onClick={() => void load(1)}><RefreshCw size={16}/>浏览 Firsto 候选</button>
+      <button type="button" className="btn secondary" disabled={blocked} onClick={() => void load(1)}><RefreshCw size={16}/>刷新日产能价候选</button>
     </form>
     {!page && !selected && !busy && !error && <p className="subtle-note">已知编号可直接查询官网，无需等待 Firsto；浏览列表仅用于发现候选，实际购机路线以链上核验结果为准。</p>}
     {error && <p className="live-notice error" role="alert">{error}</p>}
