@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ZeroAddress, getAddress } from 'ethers';
 import { dataFixture, chainFixture, apiFixture, MARKET, other, blockHash, config } from './operator-quotes-fixture.mjs';
-import { checkMinerOnchain as checkMiner, loadOperatorQuote as loadQuote, listOperatorQuotes, listingDailyCapacityPrice, operatorQuoteDraft, operatorQuoteError, parseOperatorImport } from '../lib/operator-quotes.mjs';
+import { checkMinerOnchain as checkMiner, loadOperatorQuote as loadQuote, loadVerifiedCapacityHint, listOperatorQuotes, listingDailyCapacityPrice, operatorQuoteDraft, operatorQuoteError, parseOperatorImport } from '../lib/operator-quotes.mjs';
 const checkMinerOnchain = (provider, quote) => checkMiner(provider, quote, { config });
 const loadOperatorQuote = input => loadQuote({ config, ...input });
 
@@ -117,6 +117,25 @@ test('official fixed purchase survives a broken Firsto API; flexible reference s
     provider: rpc.provider, fetcher: api.fetcher, mode: 'createFlexiblePoolChecked' });
   assert.equal(flexible.reference, null); assert.match(flexible.referenceError, /Firsto.*503/);
   assert.throws(() => operatorQuoteDraft(flexible, { mode: 'createFlexiblePoolChecked' }), /503/);
+});
+
+test('direct official lookup adds only the exact fresh Firsto capacity estimate after chain verification', async () => {
+  const data = dataFixture(), chain = chainFixture(data.quote);
+  const checked = await loadOperatorQuote({ collection: data.quote.collection, tokenId: data.quote.tokenId,
+    provider: chain.provider, mode: 'createPool' });
+  assert.equal(checked.quote, null);
+  const api = apiFixture(data);
+  const hint = await loadVerifiedCapacityHint(checked.chain, { fetcher: api.fetcher });
+  assert.equal(hint.estimated24hAtomic, data.quote.estimated24hAtomic);
+  assert.equal(api.requests.length, 2);
+  for (const changed of [
+    { ...checked.chain, owner: other },
+    { ...checked.chain, taskId: '999' },
+    { ...checked.chain, verifiedWeight: '999' },
+  ]) await assert.rejects(loadVerifiedCapacityHint(changed, { fetcher: api.fetcher }), /已变化/);
+  const stale = dataFixture();
+  Object.keys(stale.page.sourceFreshness).forEach(key => { stale.page.sourceFreshness[key] = Date.now() - 300001; });
+  await assert.rejects(loadVerifiedCapacityHint(checked.chain, { fetcher: apiFixture(stale).fetcher }), /过期/);
 });
 
 test('stale Firsto mining status does not hide a valid official on-chain listing', async () => {
