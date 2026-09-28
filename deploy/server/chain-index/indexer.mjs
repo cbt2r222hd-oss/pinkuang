@@ -261,28 +261,9 @@ export class ChainIndex {
   }
 
   async _scanChunk(fromBlock, toBlock) {
-    const headers = [];
-    // Fetch a small, fixed batch concurrently, then validate in chain order.
-    // allSettled drains every in-flight read before failure releases the sync lock.
-    for (let first = fromBlock; first <= toBlock; first += 8) {
-      const numbers = Array.from({ length: Math.min(8, toBlock - first + 1) }, (_, offset) => first + offset);
-      const batch = await Promise.allSettled(numbers.map(async number => {
-        const header = normalizeBlock(await this.provider.getBlock(number));
-        if (header.number !== number) throw new Error('RPC returned a different block number.');
-        return header;
-      }));
-      for (const result of batch) {
-        if (result.status === 'rejected') throw result.reason;
-        const header = result.value;
-        const parent = headers.at(-1) ?? this._header(header.number - 1);
-        if (parent && header.parentHash !== parent.hash) throw new Error('Chain changed during header scan.');
-        headers.push(header);
-      }
-    }
-    // These registered global addresses do not depend on discovery in this chunk.
-    // Drain every request before throwing, so a failed scan cannot leave old reads
-    // running after the sync lock is released or during a new scan/shutdown.
-    const globalReads = await Promise.allSettled([
+    // Global event queries need only the numeric range. Overlap them with
+    // header reads, then drain both sides before validating or committing.
+    const globalReadsPromise = Promise.allSettled([
       this._logs('factory', [this.factory], fromBlock, toBlock),
       this._logs('market', [this.market], fromBlock, toBlock),
       ...(this.portfolioFactory ? [
@@ -290,6 +271,30 @@ export class ChainIndex {
         this._logs('portfolioMarket', [this.portfolioMarket], fromBlock, toBlock),
       ] : []),
     ]);
+    const headers = [];
+    // Fetch a small, fixed batch concurrently, then validate in chain order.
+    // allSettled drains every in-flight read before failure releases the sync lock.
+    let headerFailure;
+    try {
+      for (let first = fromBlock; first <= toBlock; first += 8) {
+        const numbers = Array.from({ length: Math.min(8, toBlock - first + 1) }, (_, offset) => first + offset);
+        const batch = await Promise.allSettled(numbers.map(async number => {
+          const header = normalizeBlock(await this.provider.getBlock(number));
+          if (header.number !== number) throw new Error('RPC returned a different block number.');
+          return header;
+        }));
+        for (const result of batch) {
+          if (result.status === 'rejected') throw result.reason;
+          const header = result.value;
+          const parent = headers.at(-1) ?? this._header(header.number - 1);
+          if (parent && header.parentHash !== parent.hash) throw new Error('Chain changed during header scan.');
+          headers.push(header);
+        }
+      }
+    } catch (error) { headerFailure = error; }
+    // Even a failed header scan must drain started log reads before unlocking sync.
+    const globalReads = await globalReadsPromise;
+    if (headerFailure) throw headerFailure;
     const failedGlobal = globalReads.find(result => result.status === 'rejected');
     if (failedGlobal) throw failedGlobal.reason;
     const [factoryLogs, marketLogs, portfolioFactoryLogs, portfolioMarketLogs] = globalReads.map(result => result.value);

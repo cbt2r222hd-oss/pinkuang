@@ -108,6 +108,29 @@ test('server reuses only a recent complete public source; browser and private re
   assert.equal((await f.get('/api/chain-index/health')).status, 503, 'expired source is not served');
 });
 
+test('server reuses exact pinned reads while live headers and latest simulations stay fresh', async t => {
+  let clock = Date.now(), reads = 0;
+  const f = await fixture(t, { now: () => clock, pinnedRpcTtlMs: 1000,
+    upstream: (_url, init) => {
+      const request = JSON.parse(init.body); reads++;
+      return json({ jsonrpc: '2.0', id: request.id, result: '0x6001' });
+    } });
+  const pinned = rpc('eth_getCode', [address, '0xa']);
+  assert.equal((await (await f.post(pinned)).json()).result, '0x6001');
+  const hit = await f.post({ ...pinned, id: 2 });
+  assert.equal(hit.headers.get('x-bemine-server-cache'), 'hit');
+  assert.equal((await hit.json()).id, 2);
+  assert.equal(reads, 1);
+  await f.post(rpc('eth_getBlockByNumber', ['0xa', false]));
+  await f.post(rpc('eth_getBlockByNumber', ['0xa', false]));
+  await f.post(rpc('eth_call', [{ to: address, data: '0x' }, 'latest']));
+  await f.post(rpc('eth_call', [{ to: address, data: '0x' }, 'latest']));
+  assert.equal(reads, 5, 'canonical header checks and latest simulations are never cached');
+  clock += 1000;
+  await f.post(pinned);
+  assert.equal(reads, 6, 'a pinned result expires at its TTL');
+});
+
 test('oversized upstream bodies, timeout and exhausted concurrency are bounded', async t => {
   const huge = await fixture(t, { maxResponseBytes: 64, upstream: () => json({ oversized: 'x'.repeat(100) }) });
   assert.equal((await huge.post(rpc())).status, 502);
