@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { Interface, ZeroAddress, getAddress } from 'ethers';
+import { notificationPage } from './notifications.mjs';
 
 const artifactPath = fileURLToPath(new URL('../../public/deployment-artifacts.json', import.meta.url));
 const artifacts = JSON.parse(await readFile(artifactPath, 'utf8'));
@@ -9,6 +10,20 @@ const interfaces = Object.freeze({
   factory: new Interface(artifacts.artifacts.PoolFactory.abi),
   market: new Interface(artifacts.artifacts.ShareMarket.abi),
   pool: new Interface(artifacts.artifacts.PoolVault.abi),
+  portfolioFactory: new Interface(['event PortfolioCreated(address indexed portfolio,uint256 budgetWei,uint256 absoluteCapWei,uint256 unitCapWei)']),
+  portfolioMarket: new Interface(artifacts.artifacts.ShareMarket.abi),
+  portfolio: new Interface(artifacts.artifacts.BudgetPortfolioVault?.abi ?? [
+    'event Transfer(address indexed from,address indexed to,uint256 value)',
+    'event Deposited(address indexed member,uint8 shares,uint256 amount)',
+    'event ChildPurchased(address indexed child,address indexed collection,uint256 indexed tokenId,uint256 cost,bool official)',
+    'event AcquisitionFinalized(uint256 spent,uint256 officialFee,uint256 refundableToMembers,uint256 roundingWei,uint256 children)',
+    'event BemCollected(address indexed child,uint256 received)', 'event ChildHarvestFailed(address indexed child,bytes32 reasonHash)',
+    'event BemClaimed(address indexed member,uint256 amount)', 'event BnbWithdrawn(address indexed member,uint256 amount)',
+    'event ChildSaleProposed(uint256 indexed proposalId,address indexed child,uint256 price,uint64 endsAt)',
+    'event ChildSaleVoted(uint256 indexed proposalId,address indexed member,bool support,uint256 shares)',
+    'event ChildSaleApproved(uint256 indexed proposalId,address indexed child)',
+    'event ChildSaleSettled(address indexed child,uint256 netProceeds)', 'event ChildSaleExpired(uint256 indexed proposalId)',
+  ]),
 });
 const binding = new Interface([
   'function shareMarket() view returns (address)',
@@ -16,13 +31,20 @@ const binding = new Interface([
   'function factory() view returns (address)',
   'function poolCount() view returns (uint256)',
   'function nextOrderId() view returns (uint256)',
+  'function legacyFactory() view returns(address)', 'function OFFICIAL_FACTORY() view returns(address)',
+  'function portfolioCount() view returns(uint256)', 'function childCount() view returns(uint256)',
+  'function childInfo(address) view returns(address collection,uint256 tokenId,uint256 purchaseCost,bool official,bool sold)',
 ]);
 const indexedEvents = Object.freeze({
   factory: new Set(['PoolCreated']),
   market: new Set(['OrderListed', 'OrderExpirySet', 'OrderFilled', 'BuyerFeeCharged', 'OrderCancelled', 'BnbWithdrawn']),
+  portfolioFactory: new Set(['PortfolioCreated']),
+  portfolioMarket: new Set(['OrderListed','OrderExpirySet','OrderFilled','BuyerFeeCharged','OrderCancelled','BnbWithdrawn']),
+  portfolio: new Set(['Transfer','Deposited','ChildPurchased','AcquisitionFinalized','BemCollected','ChildHarvestFailed',
+    'BemClaimed','BnbWithdrawn','ChildSaleProposed','ChildSaleVoted','ChildSaleApproved','ChildSaleSettled','ChildSaleExpired']),
   pool: new Set(['Deposited', 'DepositWithdrawn', 'Funded', 'Failed', 'Purchased', 'FirstoPurchased', 'AlternativeMinerSelected',
     'PurchaseSurplusSettled', 'Harvested', 'BemClaimed', 'BnbWithdrawn', 'Transfer', 'SaleProposed', 'Voted',
-    'SaleListed', 'SaleCompleted', 'SaleExpired', 'SaleProceedsSettled', 'LockedSharesChanged',
+    'SaleListed', 'SaleCompleted', 'FirstoSaleCompleted', 'SaleExpired', 'SaleSnapshotRecorded', 'SaleProceedsSettled', 'LockedSharesChanged',
     'FlexiblePurchaseConfigured', 'PurchaseModelLocked', 'PurchaseReferenceWeightLocked']),
 });
 const topicSets = Object.freeze(Object.fromEntries(Object.entries(interfaces).map(([kind, iface]) =>
@@ -52,12 +74,17 @@ const normalizeBlock = block => {
 
 /** Read-only, event-sourced index. All amounts stay decimal strings; no transaction method is used. */
 export class ChainIndex {
-  constructor(provider, { dbPath, factory, market, startBlock, confirmations = 12, scanRange = 100, maxBlocksPerSync = 500 }) {
+  constructor(provider, { dbPath, factory, market, portfolioFactory, portfolioMarket, startBlock, confirmations = 12, scanRange = 100, maxBlocksPerSync = 500 }) {
     if (!provider || typeof provider.getLogs !== 'function' || typeof provider.call !== 'function'
       || typeof provider.send !== 'function') throw new Error('Read-only provider required.');
     this.provider = provider;
     this.factory = exactAddress(factory);
     this.market = exactAddress(market);
+    if (Boolean(portfolioFactory) !== Boolean(portfolioMarket)) throw new Error('Both portfolio Factory and market must be configured.');
+    this.portfolioFactory = portfolioFactory ? exactAddress(portfolioFactory) : null;
+    this.portfolioMarket = portfolioMarket ? exactAddress(portfolioMarket) : null;
+    if (this.portfolioFactory && new Set([this.factory,this.market,this.portfolioFactory,this.portfolioMarket]).size !== 4)
+      throw new Error('Integrated deployment addresses must differ.');
     if (this.factory === this.market) throw new Error('Factory and market must differ.');
     this.startBlock = integer(startBlock, 'startBlock');
     this.confirmations = integer(confirmations, 'confirmations', 2);
@@ -76,8 +103,11 @@ export class ChainIndex {
       CREATE INDEX IF NOT EXISTS logs_order ON logs(block_number, tx_index, log_index);
       CREATE INDEX IF NOT EXISTS logs_source ON logs(kind, address, block_number);
       CREATE INDEX IF NOT EXISTS logs_event ON logs(kind, name, block_number);
-      CREATE TABLE IF NOT EXISTS pools (address TEXT PRIMARY KEY, created_block INTEGER NOT NULL, collection TEXT NOT NULL, circuit_id TEXT NOT NULL);`);
-    const identity = JSON.stringify({ version: 1, chainId: 56, factory: this.factory, market: this.market, startBlock: this.startBlock });
+      CREATE TABLE IF NOT EXISTS pools (address TEXT PRIMARY KEY, created_block INTEGER NOT NULL, collection TEXT NOT NULL, circuit_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS portfolios (address TEXT PRIMARY KEY, created_block INTEGER NOT NULL,budget TEXT NOT NULL,absolute_cap TEXT NOT NULL,unit_cap TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS portfolio_children (address TEXT PRIMARY KEY,portfolio TEXT NOT NULL,purchased_block INTEGER NOT NULL,collection TEXT NOT NULL,token_id TEXT NOT NULL,cost TEXT NOT NULL,official INTEGER NOT NULL);`);
+    const identity = JSON.stringify({ version: this.portfolioFactory ? 2 : 1, chainId: 56, factory: this.factory, market: this.market,
+      ...(this.portfolioFactory ? {portfolioFactory:this.portfolioFactory,portfolioMarket:this.portfolioMarket} : {}),startBlock: this.startBlock });
     const saved = this.db.prepare('SELECT value FROM metadata WHERE key = ?').get('identity');
     if (saved && saved.value !== identity) { this.db.close(); throw new Error('Index database belongs to a different deployment.'); }
     if (!saved) {
@@ -102,6 +132,7 @@ export class ChainIndex {
     const source = indexedThrough >= this.startBlock ? this._header(indexedThrough) : null;
     return {
       chainId: 56, factory: this.factory, market: this.market, startBlock: this.startBlock,
+      ...(this.portfolioFactory ? {portfolioFactory:this.portfolioFactory,portfolioMarket:this.portfolioMarket} : {}),
       confirmations: this.confirmations, indexedThrough, indexedBlockHash: source?.hash ?? null,
       indexedTimestamp: source?.timestamp ?? null, observedSafeHead: this.observedSafeHead,
       complete: this.ready && this.lastError === null && indexedThrough === this.observedSafeHead,
@@ -130,6 +161,15 @@ export class ChainIndex {
     ]);
     if (factoryCode === '0x' || marketCode === '0x' || exactAddress(registeredMarket) !== this.market
       || exactAddress(marketFactory) !== this.factory) throw new Error('Factory/market code or binding mismatch.');
+    if (this.portfolioFactory) {
+      const values=await Promise.allSettled([this.provider.getCode(this.portfolioFactory,blockNumber),this.provider.getCode(this.portfolioMarket,blockNumber),
+        this._call(this.portfolioFactory,'shareMarket',[],blockNumber),this._call(this.portfolioMarket,'factory',[],blockNumber),
+        this._call(this.portfolioFactory,'legacyFactory',[],blockNumber)]);
+      if (values.some(v=>v.status==='rejected')) throw new Error('Portfolio deployment read failed.');
+      const [fc,mc,registered,factory,legacy]=values.map(v=>v.value);
+      if (fc==='0x' || mc==='0x' || exactAddress(registered)!==this.portfolioMarket || exactAddress(factory)!==this.portfolioFactory
+        || exactAddress(legacy)!==this.factory) throw new Error('Portfolio deployment binding mismatch.');
+    }
   }
 
   async _verifyHistoryComplete(blockNumber) {
@@ -142,6 +182,17 @@ export class ChainIndex {
     if (onchainPools !== BigInt(indexedPools) || nextOrderId !== BigInt(indexedOrders) + 1n) {
       throw new Error('Event history is incomplete for the configured deployment start block.');
     }
+    if (this.portfolioFactory) {
+      const count=await this._call(this.portfolioFactory,'portfolioCount',[],blockNumber);
+      const orders=await this._call(this.portfolioMarket,'nextOrderId',[],blockNumber);
+      if (count!==BigInt(this.db.prepare('SELECT COUNT(*) AS n FROM portfolios').get().n)
+        || orders!==BigInt(this.db.prepare("SELECT COUNT(*) AS n FROM logs WHERE kind='portfolioMarket' AND name='OrderListed'").get().n)+1n)
+        throw new Error('Event history is incomplete for budget projects.');
+      for (const row of this.db.prepare('SELECT address FROM portfolios').iterate()) {
+        if (await this._call(row.address,'childCount',[],blockNumber)!==BigInt(this.db.prepare('SELECT COUNT(*) AS n FROM portfolio_children WHERE portfolio=?').get(row.address).n))
+          throw new Error('Event history is incomplete for budget child miners.');
+      }
+    }
   }
 
   _rollback(number) {
@@ -149,6 +200,8 @@ export class ChainIndex {
     try {
       this.db.prepare('DELETE FROM logs WHERE block_number > ?').run(number);
       this.db.prepare('DELETE FROM pools WHERE created_block > ?').run(number);
+      this.db.prepare('DELETE FROM portfolios WHERE created_block > ?').run(number);
+      this.db.prepare('DELETE FROM portfolio_children WHERE purchased_block > ?').run(number);
       this.db.prepare('DELETE FROM headers WHERE number > ?').run(number);
       this._setIndexedThrough(number);
       this.db.exec('COMMIT');
@@ -229,7 +282,35 @@ export class ChainIndex {
       }
     }
     const poolLogs = await this._logs('pool', [...new Set([...existing, ...created.map(entry => entry.address)])], fromBlock, toBlock);
-    const logs = [...factoryLogs, ...marketLogs, ...poolLogs].sort((a, b) => a.blockNumber - b.blockNumber || a.txIndex - b.txIndex || a.logIndex - b.logIndex);
+    const portfolioLogs=[],newPortfolios=[],newChildren=[];
+    if (this.portfolioFactory) {
+      const factoryEvents=await this._logs('portfolioFactory',[this.portfolioFactory],fromBlock,toBlock);
+      const known=this.db.prepare('SELECT address FROM portfolios').all().map(row=>row.address);
+      for (const log of factoryEvents) {
+        const address=exactAddress(log.args.portfolio);
+        if (known.includes(address) || newPortfolios.some(row=>row.address===address)) throw new Error('Duplicate budget project.');
+        if (!await this._call(this.portfolioFactory,'isPool',[address],toBlock)
+          || exactAddress(await this._call(address,'OFFICIAL_FACTORY',[],toBlock))!==this.portfolioFactory
+          || exactAddress(await this._call(address,'legacyFactory',[],toBlock))!==this.factory)
+          throw new Error('Budget project is not registered to the configured graph.');
+        newPortfolios.push({address,createdBlock:log.blockNumber,...log.args});
+      }
+      const events=await this._logs('portfolio',[...known,...newPortfolios.map(row=>row.address)],fromBlock,toBlock);
+      const corePools=new Set([...existing,...created.map(row=>row.address)]);
+      for (const log of events.filter(row=>row.name==='ChildPurchased')) {
+        const child=exactAddress(log.args.child);
+        if (!corePools.has(child) || this.db.prepare('SELECT 1 FROM portfolio_children WHERE address=?').get(child)
+          || newChildren.some(row=>row.address===child)) throw new Error('Unknown or duplicate budget child miner.');
+        const raw=await this.provider.call({to:log.address,data:binding.encodeFunctionData('childInfo',[child]),blockTag:toBlock});
+        const info=binding.decodeFunctionResult('childInfo',raw);
+        if (exactAddress(info.collection)!==exactAddress(log.args.collection) || String(info.tokenId)!==log.args.tokenId
+          || String(info.purchaseCost)!==log.args.cost || info.official!==log.args.official)
+          throw new Error('Child purchase event differs from portfolio custody.');
+        newChildren.push({address:child,portfolio:log.address,purchasedBlock:log.blockNumber,...log.args});
+      }
+      portfolioLogs.push(...factoryEvents,...events,...await this._logs('portfolioMarket',[this.portfolioMarket],fromBlock,toBlock));
+    }
+    const logs = [...factoryLogs, ...marketLogs, ...poolLogs,...portfolioLogs].sort((a, b) => a.blockNumber - b.blockNumber || a.txIndex - b.txIndex || a.logIndex - b.logIndex);
     const hashes = new Map(headers.map(header => [header.number, header.hash]));
     const seen = new Set();
     for (const log of logs) {
@@ -251,6 +332,10 @@ export class ChainIndex {
       const insertLog = this.db.prepare('INSERT INTO logs(block_number,tx_index,log_index,tx_hash,address,kind,name,args) VALUES(?,?,?,?,?,?,?,?)');
       for (const header of headers) insertHeader.run(header.number, header.hash, header.parentHash, header.timestamp);
       for (const pool of created) insertPool.run(pool.address, pool.createdBlock, pool.collection, pool.circuitId);
+      const insertPortfolio=this.db.prepare('INSERT INTO portfolios(address,created_block,budget,absolute_cap,unit_cap) VALUES(?,?,?,?,?)');
+      for (const row of newPortfolios) insertPortfolio.run(row.address,row.createdBlock,row.budgetWei,row.absoluteCapWei,row.unitCapWei);
+      const insertChild=this.db.prepare('INSERT INTO portfolio_children(address,portfolio,purchased_block,collection,token_id,cost,official) VALUES(?,?,?,?,?,?,?)');
+      for (const row of newChildren) insertChild.run(row.address,row.portfolio,row.purchasedBlock,exactAddress(row.collection),row.tokenId,row.cost,row.official?1:0);
       for (const log of logs) insertLog.run(log.blockNumber, log.txIndex, log.logIndex, log.txHash, log.address, log.kind, log.name, JSON.stringify(log.args));
       this._setIndexedThrough(toBlock);
       this.db.exec('COMMIT');
@@ -321,11 +406,38 @@ export class ChainIndex {
     return pool;
   }
 
+  notifications(options = {}) { return notificationPage(this, interfaces.pool, options); }
+
   pools({ cursor = 0, limit = 20 } = {}) {
     integer(cursor, 'cursor'); integer(limit, 'limit', 1);
     if (limit > 50) throw new Error('Page limit exceeds 50.');
-    const rows = this.db.prepare('SELECT address,created_block AS createdBlock,collection,circuit_id AS circuitId FROM pools ORDER BY created_block,address LIMIT ? OFFSET ?').all(limit + 1, cursor);
+    const rows = this.db.prepare('SELECT address,created_block AS createdBlock,collection,circuit_id AS circuitId FROM pools WHERE address NOT IN (SELECT address FROM portfolio_children) ORDER BY created_block,address LIMIT ? OFFSET ?').all(limit + 1, cursor);
     return { items: rows.slice(0, limit), nextCursor: rows.length > limit ? cursor + limit : null };
+  }
+
+  portfolios({cursor=0,limit=20,account}={}) {
+    integer(cursor,'cursor');integer(limit,'limit',1);if(limit>50)throw new Error('Page limit exceeds 50.');
+    const related=new Set();
+    if(account) {
+      const wallet=exactAddress(account),orders=new Map();
+      for(const event of this._mergeLogs(this._allLogs({kind:'portfolio'}),this._allLogs({kind:'portfolioMarket'}))) {
+        const a=event.args;
+        if(event.kind==='portfolio' && [a.member,a.from,a.to].some(v=>v && lower(v)===wallet))related.add(event.address);
+        if(event.kind==='portfolioMarket' && event.name==='OrderListed') {orders.set(a.orderId,a.pool);if(a.seller===wallet)related.add(a.pool);}
+        if(event.kind==='portfolioMarket' && event.name==='OrderFilled' && a.buyer===wallet && orders.has(a.orderId))related.add(orders.get(a.orderId));
+      }
+    }
+    const rows=this.db.prepare('SELECT address,created_block AS createdBlock,budget AS budgetWei,absolute_cap AS absoluteCapWei,unit_cap AS unitCapWei FROM portfolios ORDER BY created_block,address').all()
+      .filter(row=>!account || related.has(row.address)).map(row=>({...row,kind:'portfolio',factory:this.portfolioFactory}));
+    return {items:rows.slice(cursor,cursor+limit),nextCursor:cursor+limit<rows.length?cursor+limit:null};
+  }
+
+  portfolioChildren(portfolio,{cursor=0,limit=20}={}) {
+    const address=exactAddress(portfolio);integer(cursor,'cursor');integer(limit,'limit',1);
+    if(limit>50 || !this.db.prepare('SELECT 1 FROM portfolios WHERE address=?').get(address))throw new Error('Unknown budget project.');
+    const rows=this.db.prepare('SELECT address,portfolio,purchased_block AS purchasedBlock,collection,token_id AS tokenId,cost AS costWei,official FROM portfolio_children WHERE portfolio=? ORDER BY purchased_block,address LIMIT ? OFFSET ?')
+      .all(address,limit+1,cursor).map(row=>({...row,pool:row.address,official:row.official===1}));
+    return {items:rows.slice(0,limit),nextCursor:rows.length>limit?cursor+limit:null};
   }
 
   /** Historical totals only. No estimated production or current pool state is inferred from events. */
@@ -334,23 +446,29 @@ export class ChainIndex {
     const cacheKey = `${status.indexedThrough}:${status.indexedBlockHash}`;
     if (this.cachedStats?.key === cacheKey) return this.cachedStats.value;
     const registeredPoolCount = this.db.prepare('SELECT COUNT(*) AS count FROM pools').get().count;
-    const system = new Set([ZeroAddress.toLowerCase(), this.factory, this.market]);
+    const system = new Set([ZeroAddress.toLowerCase(), this.factory, this.market,this.portfolioFactory,this.portfolioMarket]);
     for (const row of this.db.prepare('SELECT address FROM pools').iterate()) system.add(row.address);
+    for (const row of this.db.prepare('SELECT address FROM portfolios').iterate()) system.add(row.address);
     const participants = new Set();
     let purchasedCost = 0n, marketGross = 0n, harvestedNet = 0n;
     const rows = this.db.prepare(`SELECT kind,name,args FROM logs WHERE
       (kind = 'pool' AND name IN ('Deposited','Transfer','Purchased','Harvested'))
-      OR (kind = 'market' AND name = 'OrderFilled')`);
+      OR (kind = 'portfolio' AND name IN ('Deposited','Transfer'))
+      OR (kind IN ('market','portfolioMarket') AND name = 'OrderFilled')`);
     for (const row of rows.iterate()) {
       const a = JSON.parse(row.args);
       if (row.name === 'Deposited' || row.name === 'Transfer') {
-        const address = lower(row.name === 'Deposited' ? a.user : a.to);
+        const address = lower(row.name === 'Deposited' ? a.user ?? a.member : a.to);
         if (!system.has(address)) participants.add(address);
       } else if (row.name === 'Purchased') purchasedCost += BigInt(a.cost);
       else if (row.name === 'OrderFilled') marketGross += BigInt(a.gross);
       else if (row.name === 'Harvested') harvestedNet += BigInt(a.toMembers);
     }
+    const portfolioCount=this.db.prepare('SELECT COUNT(*) AS n FROM portfolios').get().n;
+    const childPoolCount=this.db.prepare('SELECT COUNT(*) AS n FROM portfolio_children').get().n;
     const value = { scope: 'confirmed_indexed_history', registeredPoolCount: String(registeredPoolCount),
+      standalonePoolCount:String(registeredPoolCount-childPoolCount),portfolioCount:String(portfolioCount),childPoolCount:String(childPoolCount),
+      topLevelProjectCount:String(registeredPoolCount-childPoolCount+portfolioCount),
       everParticipantAddressCount: String(participants.size), purchasedCostWei: purchasedCost.toString(),
       shareMarketFilledGrossWei: marketGross.toString(), harvestedToMembersBemAtomic: harvestedNet.toString(),
       estimatedDailyBemAtomic: null, currentlyActivePoolCount: null };
@@ -381,15 +499,14 @@ export class ChainIndex {
     return { items: sorted.slice(cursor, cursor + limit), nextCursor: cursor + limit < sorted.length ? cursor + limit : null };
   }
 
-  orders({ pool, seller, active, cursor, limit = 20 } = {}) {
+  orders({ pool, seller, active, cursor, limit = 20, portfolio = false } = {}) {
     const targetPool = pool === undefined ? null : exactAddress(pool);
     const targetSeller = seller === undefined ? null : exactAddress(seller);
     if (active !== undefined && typeof active !== 'boolean') throw new Error('Invalid active filter.');
     if (cursor !== undefined && !/^[1-9]\d*$/.test(String(cursor))) throw new Error('Invalid order cursor.');
     integer(limit, 'limit', 1); if (limit > 50) throw new Error('Page limit exceeds 50.');
     const orders = new Map();
-    for (const event of this._allLogs({ kind: 'market', names: ['OrderListed', 'OrderExpirySet', 'OrderFilled', 'OrderCancelled'] })) {
-      if (event.kind !== 'market') continue;
+    for (const event of this._allLogs({ kind: portfolio ? 'portfolioMarket' : 'market', names: ['OrderListed', 'OrderExpirySet', 'OrderFilled', 'OrderCancelled'] })) {
       const a = event.args;
       if (event.name === 'OrderListed') orders.set(a.orderId, { orderId: a.orderId, seller: a.seller, pool: a.pool,
         remaining: a.amount, pricePerUnitWei: a.pricePerUnit, expiresAt: null, listedBlock: event.blockNumber });
@@ -425,15 +542,17 @@ export class ChainIndex {
     const orderSellers = new Map();
     const items = [];
     const history = targetPool ? this._mergeLogs(this._allLogs({ kind: 'pool', address: targetPool }),
+      this._allLogs({kind:'portfolio',address:targetPool}),this._allLogs({kind:'portfolioMarket'}),this._allLogs({kind:'portfolioFactory'}),
       this._allLogs({ kind: 'market' }), this._allLogs({ kind: 'factory' })) : this._allLogs();
     for (const event of history) {
       const a = event.args;
-      if (event.kind === 'market' && event.name === 'OrderListed') { orderPools.set(a.orderId, a.pool); orderSellers.set(a.orderId, a.seller); }
-      const eventPool = event.kind === 'pool' ? event.address
+      const orderKey=`${event.kind}:${a.orderId}`;
+      if (['market','portfolioMarket'].includes(event.kind) && event.name === 'OrderListed') { orderPools.set(orderKey, a.pool); orderSellers.set(orderKey, a.seller); }
+      const eventPool = ['pool','portfolio'].includes(event.kind) ? event.address
         : event.kind === 'factory' && event.name === 'PoolCreated' ? a.pool
-          : orderPools.get(a.orderId) ?? null;
+          : event.kind==='portfolioFactory' && event.name==='PortfolioCreated' ? a.portfolio : orderPools.get(orderKey) ?? null;
       if (targetPool && eventPool !== targetPool) continue;
-      if (targetAccount && ![a.user, a.member, a.proposer, a.voter, a.seller, a.buyer, a.treasury, a.from, a.to, orderSellers.get(a.orderId)]
+      if (targetAccount && ![a.user, a.member, a.proposer, a.voter, a.seller, a.buyer, a.treasury, a.from, a.to, orderSellers.get(orderKey)]
         .some(value => value && lower(value) === targetAccount)) continue;
       if (cursorParts && (event.blockNumber > cursorParts[0]
         || event.blockNumber === cursorParts[0] && (event.txIndex > cursorParts[1]
@@ -451,7 +570,8 @@ export class ChainIndex {
 
   /** Pool receipts and actual wallet claims are separate series; unclaimed individual accrual is unknown. */
   yieldCurve({ pool, account, days = 30 }) {
-    const targetPool = this._registeredPool(pool);
+    const candidate=exactAddress(pool),portfolio=Boolean(this.db.prepare('SELECT 1 FROM portfolios WHERE address=?').get(candidate));
+    const targetPool = portfolio ? candidate : this._registeredPool(pool);
     const targetAccount = account === undefined ? null : exactAddress(account);
     integer(days, 'days', 1); if (days > 90) throw new Error('Yield window exceeds 90 days.');
     const end = this.status().indexedTimestamp;
@@ -464,17 +584,18 @@ export class ChainIndex {
     }
     const firstDay = [...buckets.keys()][0];
     const firstTimestamp = Math.floor(Date.parse(`${firstDay}T00:00:00Z`) / 1000) - 8 * 3600;
-    for (const event of this._allLogs({ kind: 'pool', address: targetPool,
-      names: ['Harvested', 'BemClaimed'], fromTimestamp: firstTimestamp })) {
-      if (event.kind !== 'pool' || event.address !== targetPool) continue;
+    for (const event of this._allLogs({ kind: portfolio?'portfolio':'pool', address: targetPool,
+      names: [portfolio?'BemCollected':'Harvested', 'BemClaimed'], fromTimestamp: firstTimestamp })) {
+      if (event.address !== targetPool) continue;
       const bucket = buckets.get(beijingDay(this._header(event.blockNumber).timestamp));
       if (!bucket) continue;
       if (event.name === 'Harvested') bucket.poolHarvestNetAtomic = (BigInt(bucket.poolHarvestNetAtomic) + BigInt(event.args.toMembers)).toString();
-      if (targetAccount && event.name === 'BemClaimed' && event.args.user === targetAccount) {
+      if (event.name === 'BemCollected') bucket.poolHarvestNetAtomic = (BigInt(bucket.poolHarvestNetAtomic) + BigInt(event.args.received)).toString();
+      if (targetAccount && event.name === 'BemClaimed' && (event.args.user ?? event.args.member) === targetAccount) {
         bucket.accountClaimedAtomic = (BigInt(bucket.accountClaimedAtomic) + BigInt(event.args.amount)).toString();
       }
     }
-    return { scope: 'pool', pool: targetPool, account: targetAccount, timezone: 'Asia/Shanghai', token: 'BEM', tokenDecimals: 8,
+    return { scope: portfolio?'portfolio':'pool', pool: targetPool, account: targetAccount, timezone: 'Asia/Shanghai', token: 'BEM', tokenDecimals: 8,
       buckets: [...buckets.values()], accountUnclaimedDailyAccrual: null,
       note: 'Harvested is pool accounting time; BemClaimed is actual wallet payout. Historical unclaimed per-wallet daily accrual is not inferred.' };
   }

@@ -10,7 +10,7 @@ const document = {
   schemaVersion: 1,
   chainId: '56',
   artifactDigest: digest,
-  abis: Object.fromEntries(['PoolFactory', 'PoolLens', 'PoolVault', 'ShareMarket'].map(name => [name, artifacts[name].abi])),
+  abis: Object.fromEntries(['PoolFactory', 'PoolLens', 'PoolVault', 'ShareMarket', 'BudgetPortfolioFactory', 'BudgetPortfolioVault'].map(name => [name, artifacts[name].abi])),
 };
 const destination = fileURLToPath(new URL('../lib/contracts.generated.json', import.meta.url));
 if (process.argv.includes('--check')) {

@@ -8,6 +8,7 @@ import {PurchaseMockNft} from "./PurchaseMocks.sol";
 
 /// @dev Isolated fault injection only; never production protocol provenance or a substitute for a real fork.
 contract FirstoSignedAskMock is IFirstoSignedAskExchange {
+    error SelfTrade();
     address public factory;
     bool public paused;
     uint16 public defaultTakerFeeBps;
@@ -19,6 +20,7 @@ contract FirstoSignedAskMock is IFirstoSignedAskExchange {
     uint256 public fills;
     bool public reentrySucceeded;
     bytes public reentryData;
+    address public reentryTarget;
 
     function configure(address factory_, uint16 fee, uint256 epoch) external {
         factory = factory_;
@@ -43,6 +45,10 @@ contract FirstoSignedAskMock is IFirstoSignedAskExchange {
         reentryData = data;
     }
 
+    function setReentryTarget(address target) external {
+        reentryTarget = target;
+    }
+
     function hash(SignedAsk memory ask) public view returns (bytes32) {
         bytes32 domain = keccak256(
             abi.encode(
@@ -60,20 +66,33 @@ contract FirstoSignedAskMock is IFirstoSignedAskExchange {
     }
 
     function fillSignedAsk(SignedAsk calldata ask, bytes calldata signature, address nftRecipient) external payable {
+        if (ask.maker == msg.sender) revert SelfTrade();
         require(!paused && fault != 1, "market unavailable");
         require(ask.expiry > block.timestamp && ask.schemaVersion == 2, "expired or schema");
         require(!isSignedAskNonceInvalidated[ask.maker][ask.nonce], "nonce invalidated");
         require(ask.feeBps == feeBpsAtEpoch[ask.feeEpoch], "wrong signed fee");
         require(msg.value == uint256(ask.price) + uint256(ask.price) * ask.feeBps / 10000, "wrong value");
-        require(SignatureChecker.isValidSignatureNow(ask.maker, hash(ask), signature), "bad signature");
-        isSignedAskNonceInvalidated[ask.maker][ask.nonce] = true;
+        require(
+            SignatureChecker.isValidSignatureNow(ask.maker, fault == 10 ? bytes32(0) : hash(ask), signature),
+            "bad signature"
+        );
+        if (fault != 11) isSignedAskNonceInvalidated[ask.maker][ask.nonce] = true;
         ++fills;
         if (fault != 2) {
             IERC721(ask.collection).safeTransferFrom(ask.maker, fault == 3 ? address(0xBAD) : nftRecipient, ask.tokenId);
         }
-        if (reentryData.length > 0) (reentrySucceeded,) = msg.sender.call(reentryData);
-        (bool ok,) = ask.payoutRecipient.call{value: ask.price}("");
-        require(ok, "payout rejected");
+        if (reentryData.length > 0) {
+            address target = reentryTarget == address(0) ? msg.sender : reentryTarget;
+            (reentrySucceeded,) = target.call(reentryData);
+        }
+        if (fault != 7) {
+            (bool ok,) = ask.payoutRecipient.call{value: fault == 8 ? ask.price - 1 : ask.price}("");
+            require(ok, "payout rejected");
+            if (fault == 9) {
+                (ok,) = ask.payoutRecipient.call{value: ask.price}("");
+                require(ok, "duplicate payout rejected");
+            }
+        }
         if (fault == 4) new FirstoForceBnb{value: 1}(payable(msg.sender));
         if (fault == 5) ++feeEpoch;
         if (fault == 6) PurchaseMockNft(ask.collection).forceTransfer(address(0xBAD), ask.tokenId);

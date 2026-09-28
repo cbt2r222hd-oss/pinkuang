@@ -20,7 +20,7 @@ contract WholeMinerConcurrencyTest is SaleTestBase {
         loserBalance = loser.balance;
         vm.prank(loser);
         vm.expectRevert(IPoolVault.WrongState.selector);
-        sale.completeSale{value: SALE_PRICE}();
+        sale.completeFirstoSale{value: SALE_PRICE}(1, SALE_PRICE, 0, 1);
 
         assertEq(block.timestamp, sameBlockTimestamp);
         _stateIs(IPoolVault.State.Closed);

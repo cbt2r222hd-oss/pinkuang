@@ -1,3 +1,4 @@
+import { readControlledFirstoSale } from '../lib/firsto-sale.mjs';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { lstatSync, mkdirSync, chmodSync, readFileSync } from 'node:fs';
@@ -19,7 +20,7 @@ const HASH = /^0x[\da-fA-F]{64}$/;
 const ZERO_VALUE_ACTIONS = new Set(['withdrawDeposit', 'withdrawBnb', 'harvest', 'claim']);
 const ACTIONS = new Set(['deposit', ...ZERO_VALUE_ACTIONS]);
 const MARKET_ACTIONS = new Set(['list', 'fill', 'cancel', 'expire', 'withdrawBnb']);
-const GOVERNANCE_ACTIONS = new Set(['propose', 'vote', 'executeSale', 'cancelExpired', 'completeSale']);
+const GOVERNANCE_ACTIONS = new Set(['propose', 'vote', 'executeSale', 'cancelExpired', 'completeFirstoSale']);
 const lower = value => getAddress(value).toLowerCase();
 const IMPLEMENTATION_SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
 
@@ -258,14 +259,17 @@ export function createLiveApi(config, { provider = new JsonRpcProvider(config.rp
     const [listedId, expiresAt, salePrice] = await Promise.all([
       vault.listedProposalId(), vault.expiresAt(), vault.salePrice(),
     ]);
-    if (state !== 3n || listedId < 1n || timestamp >= expiresAt || salePrice < 1n || value !== salePrice) {
+    if (state !== 3n || listedId < 1n || timestamp >= expiresAt || salePrice < 1n) {
       fail(409, 'Whole-miner sale amount or listing state changed.');
     }
     const listed = await vault.getProposal(listedId);
     if (!listed.executed || listed.price !== salePrice || listed.snapshotTs + 86400n !== listed.endsAt) {
       fail(409, 'Whole-miner listing proposal is not the reviewed atomic-sale candidate.');
     }
-    return 'governance:completeSale';
+    const fee = await readControlledFirstoSale({ request: ({method, params}) => provider.send(method, params) }, pool, `0x${block.number.toString(16)}`);
+    if (parsed.args[0] !== listedId || parsed.args[1] !== salePrice || parsed.args[2] !== fee.feeBps || parsed.args[3] !== fee.feeEpoch
+      || value !== salePrice + salePrice * fee.feeBps / 10000n) fail(409, 'Approved sale proposal, price or Firsto fee changed.');
+    return 'governance:completeFirstoSale';
   }
   async function identity({ fresh = false } = {}) {
     if (!fresh && cachedIdentity && now() < cacheUntil) return cachedIdentity;

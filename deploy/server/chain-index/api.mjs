@@ -10,7 +10,7 @@ const pageInt = (value, label, fallback, max = 50) => {
 
 /** Separate read-only HTTP surface. Never accepts a transaction, private key or arbitrary RPC address. */
 export function createChainIndexServer(index) {
-  return createServer((req, res) => {
+  return createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -30,19 +30,32 @@ export function createChainIndexServer(index) {
     if (!source.complete) return send(503, { source, data: null, error: 'Index is not verified through the observed safe head.' });
     try {
       let data;
-      if (url.pathname === '/v1/pools') {
+      if (url.pathname === '/v1/notifications') {
+        const optionalInt = name => url.searchParams.has(name)
+          ? pageInt(url.searchParams.get(name), name, 0, Number.MAX_SAFE_INTEGER) : undefined;
+        data = await index.notifications({ cursor: pageInt(url.searchParams.get('cursor'), 'cursor', 0, Number.MAX_SAFE_INTEGER),
+          limit: pageInt(url.searchParams.get('limit'), 'limit', 5, 10), atBlock: optionalInt('atBlock'),
+          atHash: url.searchParams.get('atHash') ?? undefined, anchorBlock: optionalInt('anchorBlock'),
+          anchorHash: url.searchParams.get('anchorHash') ?? undefined });
+      } else if (url.pathname === '/v1/pools') {
         data = index.pools({ cursor: pageInt(url.searchParams.get('cursor'), 'cursor', 0, Number.MAX_SAFE_INTEGER),
           limit: pageInt(url.searchParams.get('limit'), 'limit', 20) });
+      } else if (url.pathname === '/v1/portfolios' || /^\/v1\/accounts\/0x[0-9a-fA-F]{40}\/portfolios$/.test(url.pathname)) {
+        data=index.portfolios({cursor:pageInt(url.searchParams.get('cursor'),'cursor',0,Number.MAX_SAFE_INTEGER),
+          limit:pageInt(url.searchParams.get('limit'),'limit',20),account:url.pathname.startsWith('/v1/accounts/')?url.pathname.split('/')[3]:undefined});
+      } else if (/^\/v1\/portfolios\/0x[0-9a-fA-F]{40}\/children$/.test(url.pathname)) {
+        data=index.portfolioChildren(url.pathname.split('/')[3],{cursor:pageInt(url.searchParams.get('cursor'),'cursor',0,Number.MAX_SAFE_INTEGER),
+          limit:pageInt(url.searchParams.get('limit'),'limit',20)});
       } else if (url.pathname === '/v1/stats') {
         data = index.stats();
       } else if (/^\/v1\/accounts\/0x[0-9a-fA-F]{40}\/pools$/.test(url.pathname)) {
         const account = url.pathname.split('/')[3];
         data = index.accountPools(account, { cursor: pageInt(url.searchParams.get('cursor'), 'cursor', 0, Number.MAX_SAFE_INTEGER),
           limit: pageInt(url.searchParams.get('limit'), 'limit', 20) });
-      } else if (url.pathname === '/v1/orders') {
+      } else if (url.pathname === '/v1/orders' || url.pathname === '/v1/portfolio-orders') {
         const active = url.searchParams.get('active');
         if (active !== null && active !== 'true' && active !== 'false') throw new Error('Invalid active filter.');
-        data = index.orders({ pool: url.searchParams.get('pool') ?? undefined,
+        data = index.orders({ portfolio:url.pathname==='/v1/portfolio-orders',pool: url.searchParams.get('pool') ?? undefined,
           seller: url.searchParams.get('seller') ?? undefined, active: active === null ? undefined : active === 'true',
           cursor: url.searchParams.get('cursor') ?? undefined, limit: pageInt(url.searchParams.get('limit'), 'limit', 20) });
       } else if (url.pathname === '/v1/activity') {
@@ -56,6 +69,7 @@ export function createChainIndexServer(index) {
           days: pageInt(url.searchParams.get('days'), 'days', 30, 90) });
       } else return send(404, { error: 'Unknown route.' });
       return send(200, { source, data });
-    } catch { return send(400, { source, error: 'Invalid query.' }); }
+    } catch { return send(url.pathname === '/v1/notifications' ? 503 : 400,
+      { source, error: url.pathname === '/v1/notifications' ? 'Notification snapshot unavailable or changed.' : 'Invalid query.' }); }
   });
 }

@@ -1,3 +1,4 @@
+import { firstoProvider } from '../../deploy/scripts/fixtures/firsto-order.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -27,7 +28,11 @@ function rpc() {
     setSale({ price = salePrice, expiry = saleExpiry, proposalId = listedProposalId }) {
       salePrice = price; saleExpiry = expiry; listedProposalId = proposalId;
     },
-    async send(method) { assert.equal(method, 'eth_chainId'); return `0x${chain.toString(16)}`; },
+    async send(method, params = []) {
+      if(method === 'eth_chainId') return `0x${chain.toString(16)}`;
+      if(method === 'eth_call' && params[0].data === abi.PoolVault.encodeFunctionData('controlledFirstoSaleVersion')) return abi.PoolVault.encodeFunctionResult('controlledFirstoSaleVersion',[1]);
+      return firstoProvider({account:addr(1)}).provider.request({method,params});
+    },
     async getNetwork() { return { chainId: 56n }; },
     async getCode() { return '0x6000'; },
     async getStorage(target) { return `0x${(target === factory ? poolFactoryImpl : marketImpl).slice(2).padStart(64, '0')}`; },
@@ -370,10 +375,10 @@ test('whole-miner completion requires exact sale BNB; expiry unlock is a separat
     const cookie = await f.signIn(buyer);
     const base = { account: buyer.address, chainId: 56, artifactDigest: ARTIFACT_DIGEST,
       target: pool, pool, nonce: 0 };
-    const finish = abi.PoolVault.encodeFunctionData('completeSale');
+    const finish = abi.PoolVault.encodeFunctionData('completeFirstoSale', [2,10000,100,1]);
     assert.equal((await f.request('/intent', 'POST', { ...base, data: finish, value: '9999' }, cookie, buyer.address)).status, 409);
-    const saved = await f.request('/intent', 'POST', { ...base, data: finish, value: '10000' }, cookie, buyer.address);
-    assert.equal(saved.status, 201); assert.equal(saved.body.intent.action, 'governance:completeSale');
+    const saved = await f.request('/intent', 'POST', { ...base, data: finish, value: '10100' }, cookie, buyer.address);
+    assert.equal(saved.status, 201); assert.equal(saved.body.intent.action, 'governance:completeFirstoSale');
     f.provider.setSale({ price: 10001n });
     assert.equal((await f.request('/arm', 'POST', { id: saved.body.intent.id }, cookie, buyer.address)).status, 409);
     assert.equal((await f.request('/abandon', 'POST', { id: saved.body.intent.id }, cookie, buyer.address)).status, 200);

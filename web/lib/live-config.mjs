@@ -11,6 +11,7 @@ export function liveAddress(value) {
   catch { throw new LiveDataError('invalid_address', '地址格式无效。'); }
 }
 const safeInteger = n => Number.isSafeInteger(n) && n >= 0;
+export const PORTFOLIO_MANIFEST_KEYS = Object.freeze(['portfolioFactory', 'portfolioMarket', 'portfolioBeacon', 'portfolioImplementation', 'portfolioFactoryImplementation']);
 export const MANIFEST_KEYS = Object.freeze(['factory', 'shareMarket', 'lens', 'beacon', 'timelock']);
 
 /** No permissive parsing or demo fallback. The same-origin file is an operator-reviewed public trust root. */
@@ -28,8 +29,15 @@ export function validateManifest(input) {
     insist(hash(input.codehash?.[name]), 'manifest_schema', `${name} 缺少运行代码摘要。`);
     codehash[name] = input.codehash[name].toLowerCase();
   }
-  insist(new Set(Object.values(addresses)).size === MANIFEST_KEYS.length, 'manifest_schema', '部署合约地址不能重复。');
-  return Object.freeze({ schemaVersion: 1, chainId: 56, ...addresses, deployment: Object.freeze({ ...d }),
+  const hasPortfolio = input.kind === 'integrated-v2';
+  insist(hasPortfolio || !PORTFOLIO_MANIFEST_KEYS.some(key => input[key] !== undefined), 'manifest_schema', '预算部署必须使用 integrated-v2 清单。');
+  if (hasPortfolio) for (const name of PORTFOLIO_MANIFEST_KEYS) {
+    addresses[name] = liveAddress(input[name]);
+    insist(hash(input.codehash?.[name]), 'manifest_schema', `${name} 缺少运行代码摘要。`);
+    codehash[name] = input.codehash[name].toLowerCase();
+  }
+  insist(new Set(Object.values(addresses)).size === MANIFEST_KEYS.length + (hasPortfolio ? PORTFOLIO_MANIFEST_KEYS.length : 0), 'manifest_schema', '部署合约地址不能重复。');
+  return Object.freeze({ schemaVersion: 1, chainId: 56, ...(hasPortfolio ? { kind: 'integrated-v2' } : {}), ...addresses, deployment: Object.freeze({ ...d }),
     artifactDigest: input.artifactDigest.toLowerCase(), sourceCommit: input.sourceCommit, verifiedAt: input.verifiedAt,
     verifiedBlockNumber: input.verifiedBlockNumber, codehash: Object.freeze(codehash) });
 }

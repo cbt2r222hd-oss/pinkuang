@@ -4,13 +4,14 @@ import { readFileSync } from 'node:fs';
 import { Interface, getAddress, keccak256, toUtf8Bytes } from 'ethers';
 import { productGraphConfiguration, verifyProductGraph } from './product-graph.mjs';
 const bundle=JSON.parse(readFileSync(new URL('../public/deployment-artifacts.json',import.meta.url),'utf8'));
-const libraries=['FlexiblePurchase','MiningOperations','PoolFunds','PurchaseValidation','RewardAccounting','SaleGovernance','SaleSettlement','ShareCheckpoints'];
-const names=[...libraries,'AtomicDeployment','PoolVault','PoolFactory','ShareMarket','factory','shareMarket','lens','beacon','timelock'];
-const artifacts={factory:'ERC1967Proxy',shareMarket:'ERC1967Proxy',lens:'PoolLens',beacon:'PoolBeacon',timelock:'PoolTimelock'};
+const libraries=['FlexiblePurchase','MiningOperations','PoolFunds','PurchaseValidation','RewardAccounting','SaleGovernance','SaleSettlement','ShareCheckpoints','FirstoSale'];
+const names=[...libraries,'AtomicDeployment','PoolVault','PoolFactory','ShareMarket','BudgetPortfolioFactory','BudgetPortfolioVault','factory','shareMarket','lens','beacon','timelock','portfolioFactory','portfolioShareMarket','portfolioBeacon'];
+const artifacts={factory:'ERC1967Proxy',shareMarket:'ERC1967Proxy',lens:'PoolLens',beacon:'PoolBeacon',timelock:'PoolTimelock',portfolioFactory:'ERC1967Proxy',portfolioShareMarket:'ERC1967Proxy',portfolioBeacon:'PoolBeacon'};
 const addr=n=>getAddress(`0x${n.toString(16).padStart(40,'0')}`),hash=n=>`0x${n.toString(16).padStart(64,'0')}`;
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 function fixture(){
   const {sourceCommit:_source,...content}=bundle, addresses=Object.fromEntries(names.map((name,i)=>[name,addr(i+1)]));
+  addresses.portfolioVaultImplementation=addresses.BudgetPortfolioVault;addresses.portfolioFactoryImplementation=addresses.BudgetPortfolioFactory;
   const runtimes={};
   for(const name of names){
     const artifact=bundle.artifacts[artifacts[name]??name];let bytes=artifact.deployedBytecode.slice(2);
@@ -19,24 +20,28 @@ function fixture(){
     if(libraries.includes(name)&&bytes.startsWith(`73${'0'.repeat(40)}`))bytes=`73${addresses[name].slice(2).toLowerCase()}${bytes.slice(42)}`;
     runtimes[name]='0x'+bytes;
   }
-  const account=addr(90), input={ownerMultisig:account,operator:account,treasury:account};
-  const record={schemaVersion:1,chainId:56,status:'complete',account,input,addresses,
+  const account=addr(90), input={governanceMode:'single',ownerMultisig:account,operator:account,treasury:account};
+  const record={schemaVersion:1,kind:'integrated-v2',chainId:56,status:'complete',account,input,addresses,
     artifactDigest:keccak256(toUtf8Bytes(JSON.stringify(canonical(content)))),
-    steps:[...libraries,'AtomicDeployment','PoolVault','PoolFactory','ShareMarket','initialize'].map(id=>({id,status:'confirmed',receipt:{status:1},txHash:hash(8)})),
+    steps:[...libraries,'AtomicDeployment','PoolVault','PoolFactory','ShareMarket','BudgetPortfolioFactory','BudgetPortfolioVault','initialize'].map(id=>({id,status:'confirmed',receipt:{status:1},txHash:hash(8)})),
     verification:{checks:[{passed:true}],code:Object.fromEntries(names.map(name=>[name,{address:addresses[name],codehash:keccak256(runtimes[name])}]))}};
   const state={codeChanged:null,binding:null,slot:false,reorg:false,codeReads:0,callReads:0};
-  const values={AtomicDeployment:{deployed:true,deployer:account,predictedFactory:addresses.factory},
+  const values={AtomicDeployment:{deployed:true,deployer:account,predictedFactory:addresses.factory,predictedPortfolioFactory:addresses.portfolioFactory},
     factory:{owner:account,operator:account,treasury:account,lens:addresses.lens,shareMarket:addresses.shareMarket,beacon:addresses.beacon,timelock:addresses.timelock},
-    lens:{factory:addresses.factory,VERSION:1n},shareMarket:{factory:addresses.factory,timelock:addresses.timelock,feeBps:100n},
+    lens:{factory:addresses.factory,VERSION:1n},shareMarket:{factory:addresses.factory,timelock:addresses.timelock,feeBps:100n,buyerFeeBps:100n},
+    portfolioFactory:{owner:account,operator:account,treasury:account,timelock:addresses.timelock,legacyFactory:addresses.factory,beacon:addresses.portfolioBeacon,shareMarket:addresses.portfolioShareMarket},
+    portfolioShareMarket:{factory:addresses.portfolioFactory,timelock:addresses.timelock,feeBps:100n,buyerFeeBps:100n},
+    portfolioBeacon:{owner:addresses.timelock,implementation:addresses.BudgetPortfolioVault,OFFICIAL_FACTORY:addresses.portfolioFactory},
+    BudgetPortfolioVault:{OFFICIAL_FACTORY:addresses.portfolioFactory},
     beacon:{owner:addresses.timelock,implementation:addresses.PoolVault,OFFICIAL_FACTORY:addresses.factory},PoolVault:{OFFICIAL_FACTORY:addresses.factory},
     timelock:{getMinDelay:172800n,MINIMUM_DELAY:172800n,PROPOSER_ROLE:hash(1),CANCELLER_ROLE:hash(2),EXECUTOR_ROLE:hash(3),DEFAULT_ADMIN_ROLE:hash(4)}};
   const provider={
     getCode:async(address,block)=>{assert.equal(block,100);state.codeReads++;const name=names.find(n=>addresses[n].toLowerCase()===address.toLowerCase());return state.codeChanged===name?runtimes[name]+'00':runtimes[name];},
-    getStorage:async(address,slot,block)=>{assert.equal(block,100);return '0x'+(state.slot?addr(99):address===addresses.factory?addresses.PoolFactory:addresses.ShareMarket).slice(2).padStart(64,'0');},
+    getStorage:async(address,slot,block)=>{assert.equal(block,100);return '0x'+(state.slot?addr(99):address===addresses.factory?addresses.PoolFactory:address===addresses.portfolioFactory?addresses.BudgetPortfolioFactory:addresses.ShareMarket).slice(2).padStart(64,'0');},
     getBlock:async()=>({number:100,hash:state.reorg?hash(101):hash(100)}),
     async send(method,[tx,tag]){
       assert.equal(method,'eth_call');assert.equal(tag,'0x64');state.callReads++;
-      const name=names.find(n=>addresses[n].toLowerCase()===tx.to.toLowerCase()),iface=new Interface(bundle.artifacts[({factory:'PoolFactory',shareMarket:'ShareMarket'})[name] ?? artifacts[name] ?? name].abi);
+      const name=names.find(n=>addresses[n].toLowerCase()===tx.to.toLowerCase()),iface=new Interface(bundle.artifacts[({factory:'PoolFactory',shareMarket:'ShareMarket',portfolioFactory:'BudgetPortfolioFactory',portfolioShareMarket:'ShareMarket'})[name] ?? artifacts[name] ?? name].abi);
       const parsed=iface.parseTransaction(tx);let value=values[name][parsed.name];
       if(parsed.name==='hasRole')value=(parsed.args[0]===hash(1)||parsed.args[0]===hash(2))&&parsed.args[1]===account
         ||parsed.args[0]===hash(3)&&parsed.args[1]===addr(0)||parsed.args[0]===hash(4)&&parsed.args[1]===addresses.timelock;
@@ -58,9 +63,12 @@ test('fresh pinned graph accepts all compiled runtime, roles and slots then dete
   const f=fixture();await verifyProductGraph(f.provider,f.addresses.factory,f.trusted,f.block);
   assert.equal(f.state.codeReads,names.length);assert(f.state.callReads>=25);
   for(const binding of ['AtomicDeployment.deployer','factory.operator','factory.treasury','factory.lens','lens.factory','lens.VERSION',
-    'shareMarket.feeBps','shareMarket.timelock','beacon.implementation','beacon.OFFICIAL_FACTORY','PoolVault.OFFICIAL_FACTORY','timelock.getMinDelay','timelock.hasRole']){
+    'shareMarket.feeBps','shareMarket.timelock','beacon.implementation','beacon.OFFICIAL_FACTORY','PoolVault.OFFICIAL_FACTORY','timelock.getMinDelay','timelock.hasRole',
+    'portfolioFactory.legacyFactory','portfolioFactory.shareMarket','portfolioShareMarket.buyerFeeBps','portfolioBeacon.implementation','BudgetPortfolioVault.OFFICIAL_FACTORY']){
     f.state.binding=binding;await assert.rejects(verifyProductGraph(f.provider,f.addresses.factory,f.trusted,f.block),/changed/);
   }
+  f.state.binding=null;const graph=await verifyProductGraph(f.provider,f.addresses.portfolioFactory,f.trusted,f.block);
+  assert.equal(graph.productKind,'budget');assert.equal(graph.legacyFactory,f.addresses.factory);
 });
 test('runtime drift, implementation upgrade, reorg, missing evidence and unconfigured factory fail closed',async()=>{
   for(const change of [{codeChanged:'FlexiblePurchase'},{codeChanged:'PoolVault'},{codeChanged:'factory'},{slot:true},{reorg:true}]){

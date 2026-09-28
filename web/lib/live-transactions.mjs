@@ -1,10 +1,11 @@
 import { getAddress, hexlify, toUtf8Bytes, toQuantity } from 'ethers';
 import { abi } from './chain-client.mjs';
 import { settleReadRound } from './read-retry.mjs';
+import { PORTFOLIO_ACTIONS } from './live-portfolios.mjs';
 import { decodeFirstoOrder } from '../../deploy/src/firsto-purchase.mjs';
 const HASH = /^0x[0-9a-f]{64}$/i;
 const ZERO = `0x${'0'.repeat(40)}`;
-const POOL_ACTIONS = new Set(['deposit','withdrawDeposit','finalizeFailure','harvest','claim','withdrawBnb','propose','vote','executeSale','cancelExpired','completeSale','buyFromMarket','buyAlternativeFromMarket','buyFromFirsto','mine']);
+const POOL_ACTIONS = new Set(['deposit','withdrawDeposit','finalizeFailure','harvest','claim','withdrawBnb','propose','vote','executeSale','cancelExpired','completeFirstoSale','buyFromMarket','buyAlternativeFromMarket','buyFromFirsto','mine']);
 const FACTORY_ACTIONS = new Set(['createPool','createFlexiblePoolChecked']);
 const MARKET_ACTIONS = new Set(['list','fill','cancel','expire','withdrawBnb']);
 const active = new Set();
@@ -114,18 +115,24 @@ export async function abandonPrepared({ account, config = {}, fetcher = globalTh
 }
 function normalize(config, transaction, action) {
   requireValue(config?.status === 'ready' && Number(config.chainId) === 56, '当前尚未配置已验证的 BSC 部署。');
-  const factory = address(config.factory), target = address(transaction.to), account = address(transaction.from);
+  const budgetTarget = typeof action === 'object' && ['portfolioFactory', 'portfolio', 'portfolioMarket'].includes(action?.targetType);
+  requireValue(!budgetTarget || config.kind === 'integrated-v2' && config.portfolioFactory && config.portfolioMarket, '预算部署尚未核验。');
+  const factory = address(budgetTarget ? config.portfolioFactory : config.factory), target = address(transaction.to), account = address(transaction.from);
   requireValue(exact(transaction.chainId) === 56n, '交易目标或网络错误。');
-  const targetType = same(target, factory) ? 'factory' : config.shareMarket && same(target, config.shareMarket) ? 'market' : 'pool';
-  const contract = targetType === 'factory' ? abi.PoolFactory : targetType === 'pool' ? abi.PoolVault : abi.ShareMarket;
-  const allowed = targetType === 'factory' ? FACTORY_ACTIONS : targetType === 'pool' ? POOL_ACTIONS : MARKET_ACTIONS;
+  const targetType = budgetTarget ? same(target, factory) ? 'portfolioFactory' : same(target, config.portfolioMarket) ? 'portfolioMarket' : 'portfolio'
+    : same(target, factory) ? 'factory' : config.shareMarket && same(target, config.shareMarket) ? 'market' : 'pool';
+  requireValue(!budgetTarget || targetType === action.targetType, '预算操作目标类型不一致。');
+  const contract = targetType === 'portfolioFactory' ? abi.BudgetPortfolioFactory : targetType === 'portfolio' ? abi.BudgetPortfolioVault
+    : targetType === 'factory' ? abi.PoolFactory : targetType === 'pool' ? abi.PoolVault : abi.ShareMarket;
+  const allowed = targetType === 'portfolioFactory' ? new Set(['createPortfolio']) : targetType === 'portfolio' ? PORTFOLIO_ACTIONS
+    : targetType === 'factory' ? FACTORY_ACTIONS : targetType === 'pool' ? POOL_ACTIONS : MARKET_ACTIONS;
   const value = exact(transaction.value ?? '0'), data = transaction.data;
   requireValue(typeof data === 'string' && /^0x(?:[0-9a-f]{2}){4,2048}$/i.test(data), '交易 calldata 格式错误。');
   const decoded = contract.parseTransaction({ data, value });
   const kind = typeof action === 'string' ? action : action?.kind;
   requireValue(decoded && allowed.has(decoded.name) && (kind === decoded.name || kind === 'withdraw' && decoded.name === 'withdrawBnb')
     && contract.encodeFunctionData(decoded.fragment, decoded.args).toLowerCase() === data.toLowerCase(), '操作名称与允许的交易内容不一致。');
-  requireValue(['deposit','completeSale','fill'].includes(decoded.name) || value === 0n, '该操作不能附带 BNB。');
+  requireValue(['deposit','completeFirstoSale','fill'].includes(decoded.name) || value === 0n, '该操作不能附带 BNB。');
   if (decoded.name === 'buyFromFirsto') {
     requireValue(decoded.args[0] === 0n, 'Firsto 批量挂单尚未开放。'); decodeFirstoOrder(decoded.args[1]);
   }
@@ -146,12 +153,12 @@ function validateResult(result, account, record, hash) {
       requireValue(same(result.poolAddress, result.target) && exact(result.shares) > 0n && exact(result.shares) <= 100n
         && exact(result.amountWei) > 0n, '认购成功缺少经过验证的份额与付款信息。');
       if (record) {
-        const decoded = abi.PoolVault.parseTransaction({ data: record.data });
+        const decoded = (record.targetType === 'portfolio' ? abi.BudgetPortfolioVault : abi.PoolVault).parseTransaction({ data: record.data });
         requireValue(decoded.name === 'deposit' && decoded.args[0] === exact(result.shares) && record.value === result.amountWei, '认购事件与原始份额或付款不一致。');
       }
     }
   }
-  return { ...result, hash: result.transactionHash };
+  return { ...result, ...(record?.targetType ? { targetType: record.targetType } : {}), hash: result.transactionHash };
 }
 /** Read-only recovery through the fixed server RPC. No wallet permission, signing, send or retry. */
 export async function recoverPending({ provider, config = {}, account, hash, onState, fetcher = globalThis.fetch }) {

@@ -16,6 +16,30 @@ library PoolFunds {
     event Purchased(uint256 cost, uint8 path, uint256 listingId);
     event PurchaseSurplusSettled(address indexed user, uint256 shares, uint256 amount);
 
+    /// @dev Vault's initializer and immutable factory check guard this delegate call.
+    function initialize(
+        PoolVaultState.VaultStorage storage s,
+        address factory,
+        IPoolVault.PoolParams calldata params,
+        address treasury
+    ) external {
+        if (msg.sender != factory || factory.code.length == 0 || treasury == address(0)) {
+            revert IPoolVault.Unauthorized();
+        }
+        if (params.targetRaise == 0 || params.targetRaise % TOTAL_SHARES != 0) {
+            revert IPoolVault.FundingTargetNotDivisible();
+        }
+        if (params.priceCap == 0 || params.priceCap > params.targetRaise) revert IPoolVault.OverPriceCap();
+        if (params.fundingDeadline <= block.timestamp || params.purchaseDeadline <= params.fundingDeadline) {
+            revert IPoolVault.InvalidParameters();
+        }
+        s.factory = factory;
+        s.treasury = treasury;
+        s.params = params;
+        s.unitPriceWei = params.targetRaise / TOTAL_SHARES;
+        s.state = IPoolVault.State.Funding;
+    }
+
     /// @notice Wallet metadata identifies both the collection and the intended miner.
     function shareName(address circuits, uint256 circuitId) external pure returns (string memory) {
         string memory collection = circuits == 0x1F5Cb4aeaE1807Bf60c3b9C0D8aDBCC14e91f12C ? "Behemoth" : "TapeOut";

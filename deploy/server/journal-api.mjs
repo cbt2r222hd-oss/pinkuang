@@ -7,6 +7,9 @@ import { verifyInitializationExecution } from '../shared/initialization-proof.mj
 import { productGraphConfiguration, verifyProductGraph } from './product-graph.mjs';
 import { decodeFirstoOrder, verifyFirstoSignedAsk } from '../src/firsto-purchase.mjs';
 import { fetchOfficialCandidates } from '../scripts/official-market-discovery.mjs';
+import { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI, verifyPortfolioIntent } from './portfolio-intent.mjs';
+import { verifyControlledFirstoSale } from './firsto-sale-preflight.mjs';
+export { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI } from './portfolio-intent.mjs';
 
 const MAX_BODY = 64 * 1024;
 const CHALLENGE_MS = 5 * 60_000;
@@ -46,6 +49,7 @@ export const PRODUCT_POOL_ABI = new Interface([
   'function harvest()', 'function claim()', 'function withdrawBnb()',
   'function propose(uint256 price,uint256 refPrice,uint64 refAt)', 'function vote(uint256 proposalId,bool support)',
   'function executeSale(uint256 proposalId)', 'function cancelExpired()', 'function completeSale() payable',
+  'function completeFirstoSale(uint256 expectedProposalId,uint256 expectedSalePrice,uint16 expectedFeeBps,uint256 expectedFeeEpoch) payable',
   'event Deposited(address indexed user,uint8 shares,uint256 amount,uint256 totalRaised)',
 ]);
 export const PRODUCT_MARKET_ABI = new Interface([
@@ -112,7 +116,7 @@ async function readJson(req) {
 }
 
 function validateDeployment(value, account) {
-  if (!isRecord(value) || value.schemaVersion !== 1 || value.chainId !== 56 || identity(value.account) !== account
+  if (!isRecord(value) || value.schemaVersion !== 1 || (value.kind !== undefined && value.kind !== 'integrated-v2') || value.chainId !== 56 || identity(value.account) !== account
     || typeof value.id !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value.id)
     || typeof value.sourceCommit !== 'string' || !/^[\da-f]{40,64}$/i.test(value.sourceCommit)
     || !HASH.test(value.artifactDigest) || !STATUSES.has(value.status)
@@ -161,18 +165,24 @@ function validateCancellationRequests(record) {
 }
 
 function decodeProduct(value) {
-  const contract = value.targetType === 'factory' ? PRODUCT_FACTORY_ABI : value.targetType === 'pool' ? PRODUCT_POOL_ABI : PRODUCT_MARKET_ABI;
+  const contract = ({factory:PRODUCT_FACTORY_ABI,pool:PRODUCT_POOL_ABI,market:PRODUCT_MARKET_ABI,
+    portfolio:PRODUCT_PORTFOLIO_ABI,portfolioFactory:PRODUCT_PORTFOLIO_FACTORY_ABI,portfolioMarket:PRODUCT_MARKET_ABI})[value.targetType];
+  if (!contract) fail(400,'Unsupported product target type.');
   let decoded;
   try { decoded = contract.parseTransaction({ data: value.data, value: BigInt(value.value) }); }
   catch { fail(400, 'Unsupported product call.'); }
   if (!decoded || decoded.name !== value.action.kind
     || contract.encodeFunctionData(decoded.fragment, decoded.args).toLowerCase() !== value.data.toLowerCase())
     fail(400, 'Product action and exact calldata must match an allowed selector.');
-  if (!['deposit','completeSale','fill'].includes(decoded.name) && value.value !== '0') fail(400, 'This product call cannot send BNB.');
+  if (!['deposit','completeSale','completeFirstoSale','fill'].includes(decoded.name) && value.value !== '0') fail(400, 'This product call cannot send BNB.');
   if (decoded.name === 'deposit' && (decoded.args[0] < 1n || decoded.args[0] > 100n)
     || decoded.name === 'list' && (decoded.args[1] < 1n || decoded.args[1] > 100n)
     || decoded.name === 'fill' && (decoded.args[1] < 1n || decoded.args[1] > 100n)) fail(400, 'Invalid share quantity.');
   if (decoded.name === 'propose' && decoded.args[0] === 0n) fail(400, 'Whole miner sale price must be positive.');
+  if (decoded.name === 'proposeChildSale' && decoded.args[1] === 0n) fail(400,'Child sale price must be positive.');
+  if (decoded.name === 'buyFirsto') {
+    try { decodeFirstoOrder(decoded.args[1]); } catch { fail(400,'Invalid canonical Firsto order.'); }
+  }
   if (decoded.name === 'buyFromFirsto') {
     if (decoded.args[0] !== 0n) fail(400, 'Firsto batch purchases are not enabled.');
     try { decodeFirstoOrder(decoded.args[1]); } catch { fail(400, 'Invalid canonical Firsto order.'); }
@@ -188,8 +198,8 @@ function decodeProduct(value) {
 
 function validateProduct(value, account) {
   if (!isRecord(value) || value.chainId !== 56 || identity(value.account) !== account
-    || !['pool','market','factory'].includes(value.targetType)
-    || (value.targetType === 'factory') !== (identity(value.factory) === identity(value.target))
+    || !['pool','market','factory','portfolio','portfolioFactory','portfolioMarket'].includes(value.targetType)
+    || ['factory','portfolioFactory'].includes(value.targetType) !== (identity(value.factory) === identity(value.target))
     || !Number.isSafeInteger(value.nonce) || value.nonce < 0 || !isRecord(value.action)
     || typeof value.action.kind !== 'string' || typeof value.submittedAt !== 'string' || value.submittedAt.length > 50
     || typeof value.data !== 'string' || !DATA.test(value.data) || value.data.length > 8194
@@ -251,17 +261,20 @@ export async function verifyProductIntent(provider, record, allowedFactories, gr
     if (!block?.hash) fail(503, 'Product block is unavailable.');
     const tag = `0x${block.number.toString(16)}`;
     if (typeof graphVerifier !== 'function') fail(503, 'Trusted product graph verifier is unavailable.');
-    await graphVerifier(provider, record.factory, block);
+    const graph = await graphVerifier(provider, record.factory, block);
     const call = async (to, method, args = []) => IDENTITY_ABI.decodeFunctionResult(method,
       await provider.send('eth_call', [{ to, data: IDENTITY_ABI.encodeFunctionData(method, args) }, tag]))[0];
     const code = async to => { if (await provider.getCode(to, block.number) === '0x') fail(409, 'Product contract has no code.'); };
     const registeredPool = async pool => {
       await code(pool);
-      if (!await call(record.factory, 'isPool', [pool]) || identity(await call(pool, 'factory')) !== identity(record.factory)
+      if (!await call(record.factory, 'isPool', [pool])
+        || record.targetType !== 'portfolioMarket' && identity(await call(pool, 'factory')) !== identity(record.factory)
         || identity(await call(pool, 'OFFICIAL_FACTORY')) !== identity(record.factory)) fail(409, 'Pool is not registered to this Factory.');
     };
     await code(record.factory); await code(record.target);
-    if (record.targetType === 'factory') {
+    if (['portfolio','portfolioFactory'].includes(record.targetType)) {
+      await verifyPortfolioIntent(provider,record,decoded,block,graph,fail);
+    } else if (record.targetType === 'factory') {
       if (identity(record.target) !== identity(record.factory) || identity(await call(record.factory, 'operator')) !== identity(record.account))
         fail(403, 'Only the configured Factory operator may create pools.');
       // A legacy factory cannot guarantee the user's one-machine-one-project rule.
@@ -283,9 +296,11 @@ export async function verifyProductIntent(provider, record, allowedFactories, gr
         decodeFirstoOrder(decoded.args[1]), { blockTag:tag });
       if (decoded.name === 'deposit' && BigInt(record.value) !== decoded.args[0] * await call(record.target, 'unitPriceWei'))
         fail(409, 'Deposit value differs from the current share price.');
-      if (decoded.name === 'completeSale' && (BigInt(record.value) === 0n || BigInt(record.value) !== await call(record.target, 'salePrice')))
-        fail(409, 'Whole miner sale payment differs from the approved price.');
+      if (decoded.name === 'completeSale') fail(409,'Legacy whole miner sale is disabled; review the controlled Firsto sale.');
+      if (decoded.name === 'completeFirstoSale') await verifyControlledFirstoSale(provider,record,decoded,block);
     } else {
+      if (record.targetType === 'portfolioMarket' && (graph?.productKind !== 'budget' || identity(graph.factory) !== identity(record.factory)))
+        fail(409,'The reviewed integrated portfolio market is required.');
       if (identity(await call(record.factory, 'shareMarket')) !== identity(record.target)
         || identity(await call(record.target, 'factory')) !== identity(record.factory)) fail(409, 'Market is not registered to this Factory.');
       if (decoded.name === 'list' || decoded.name === 'fill') {
@@ -400,14 +415,14 @@ export async function verifyMarketFinalized(provider, record, hash) {
     account: record.account, target, nonce: record.nonce, factory: record.factory,
     receipt: { status: receipt.status, transactionHash: hash.toLowerCase(), to: receipt.to,
       blockNumber: receipt.blockNumber, blockHash: receipt.blockHash } };
-  if (record.version === 2 && record.targetType === 'pool' && record.action.kind === 'deposit' && result.status === 'confirmed') {
+  if (record.version === 2 && ['pool','portfolio'].includes(record.targetType) && record.action.kind === 'deposit' && result.status === 'confirmed') {
     const expected = decodeProduct(record);
     const deposits = (receipt.logs ?? []).filter(log => !log.removed && log.transactionHash?.toLowerCase() === hash.toLowerCase()
       && log.blockHash === receipt.blockHash && log.address?.toLowerCase() === target.toLowerCase()).flatMap(log => {
-      try { const parsed = PRODUCT_POOL_ABI.parseLog(log); return parsed?.name === 'Deposited' ? [parsed] : []; }
+      try { const parsed = (record.targetType === 'portfolio' ? PRODUCT_PORTFOLIO_ABI : PRODUCT_POOL_ABI).parseLog(log); return parsed?.name === 'Deposited' ? [parsed] : []; }
       catch { return []; }
     });
-    if (deposits.length !== 1 || identity(deposits[0].args.user) !== record.account.toLowerCase()
+    if (deposits.length !== 1 || identity(deposits[0].args.user ?? deposits[0].args.member) !== record.account.toLowerCase()
       || deposits[0].args.shares !== expected.args[0] || deposits[0].args.amount.toString() !== record.value)
       fail(409, 'Finalized deposit event does not match the recorded pool, account, shares and payment.');
     Object.assign(result, { poolAddress: target, shares: expected.args[0].toString(), amountWei: record.value });
@@ -422,6 +437,16 @@ export async function verifyMarketFinalized(provider, record, hash) {
       || events[0].args.circuitId!==params.circuitId || events[0].args.targetRaise!==params.targetRaise || events[0].args.priceCap!==params.priceCap)
       fail(409,'Finalized pool creation event differs from the reviewed request.');
     result.poolAddress=getAddress(events[0].args.pool);
+  }
+  if (record.version === 2 && record.targetType === 'portfolioFactory' && result.status === 'confirmed') {
+    const expected=decodeProduct(record);
+    const events=(receipt.logs ?? []).filter(log=>!log.removed && log.transactionHash?.toLowerCase()===hash.toLowerCase()
+      && log.blockHash===receipt.blockHash && log.address?.toLowerCase()===target.toLowerCase()).flatMap(log=>{
+      try { const parsed=PRODUCT_PORTFOLIO_FACTORY_ABI.parseLog(log); return parsed?.name==='PortfolioCreated' ? [parsed] : []; } catch {return [];}
+    });
+    if (events.length!==1 || ['budgetWei','absoluteCapWei','unitCapWei'].some((field,i)=>events[0].args[field]!==expected.args[i]))
+      fail(409,'Finalized portfolio creation event differs from the reviewed request.');
+    result.portfolioAddress=getAddress(events[0].args.portfolio);
   }
   return result;
 }
@@ -592,6 +617,13 @@ async function verifyWrappedCoordinator(provider, record, proofs, execution, sup
       || !recordedAddressMatches(prediction[0], execution.addresses.factory.toLowerCase())
       || names.some((name, index) => !recordedAddressMatches(deployment[index], execution.addresses[name].toLowerCase())))
       fail(409, 'Wrapped initialization coordinator state differs from its verified completion events.');
+    if (record.kind === 'integrated-v2') {
+      const [portfolioPrediction,portfolio] = await Promise.all([read('predictedPortfolioFactory'),read('portfolioDeployment')]);
+      if (!recordedAddressMatches(portfolioPrediction[0],execution.addresses.portfolioFactory.toLowerCase())
+        || ['portfolioFactory','portfolioBeacon','portfolioShareMarket'].some((name,index)=>
+          !recordedAddressMatches(portfolio[index],execution.addresses[name].toLowerCase())))
+        fail(409,'Wrapped portfolio initialization state differs from its verified completion events.');
+    }
   } catch (error) {
     if (error instanceof ApiError) throw error;
     fail(503, 'Wrapped initialization coordinator state could not be independently verified.');
@@ -601,11 +633,15 @@ async function verifyWrappedCoordinator(provider, record, proofs, execution, sup
 /** Archive only after proving every deployment intent's finalized winning transaction. */
 export async function verifyCompletedDeployment(provider, record, { trustedArtifactBundle } = {}) {
   if (record?.status !== 'complete') fail(409, 'Only a completed deployment can be archived.');
-  const librarySteps = record.steps.slice(0, LIBRARY_STEPS.size);
-  if (record.steps.length !== LIBRARY_STEPS.size + FINAL_STEPS.length
-    || librarySteps.some(step => !LIBRARY_STEPS.has(step.id))
-    || new Set(librarySteps.map(step => step.id)).size !== LIBRARY_STEPS.size
-    || FINAL_STEPS.some((id, index) => record.steps[LIBRARY_STEPS.size + index].id !== id))
+  if (record.kind !== undefined && record.kind !== 'integrated-v2') fail(409,'Unsupported deployment kind.');
+  const libraries = new Set([...LIBRARY_STEPS,...(record.kind === 'integrated-v2' ? ['FirstoSale'] : [])]);
+  const finalSteps = record.kind === 'integrated-v2'
+    ? ['AtomicDeployment','PoolVault','PoolFactory','ShareMarket','BudgetPortfolioFactory','BudgetPortfolioVault','initialize'] : FINAL_STEPS;
+  const librarySteps = record.steps.slice(0, libraries.size);
+  if (record.steps.length !== libraries.size + finalSteps.length
+    || librarySteps.some(step => !libraries.has(step.id))
+    || new Set(librarySteps.map(step => step.id)).size !== libraries.size
+    || finalSteps.some((id, index) => record.steps[libraries.size + index].id !== id))
     fail(409, 'Completed deployment has missing or reordered steps.');
   const verification = record.verification;
   if (!verification || !Array.isArray(verification.checks) || verification.checks.length === 0
@@ -683,7 +719,7 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
   provider: suppliedProvider, currentArtifactDigest, assertSigningInputsCurrent = () => {}, allowedProductFactories = [], productDeploymentRecordPath,
   productDeploymentRecord, productArtifactBundle, productGraphVerifier,
   officialCandidateDiscovery = fetchOfficialCandidates, officialSnapshotFetch = fetch,
-  officialScanTimeoutMs = OFFICIAL_SCAN_MS, now = Date.now,
+  officialScanTimeoutMs = OFFICIAL_SCAN_MS, now = Date.now, notificationService,
   genesisRecordPath, genesisBundlePath, genesisRecord, genesisBundle } = {}) {
   if (typeof dbPath !== 'string' || !dbPath) throw new Error('Journal database path is required.');
   if (typeof currentArtifactDigest !== 'function') throw new Error('Current deployment artifact digest provider is required.');
@@ -922,7 +958,19 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
       const url = new URL(req.url, origin), path = url.pathname;
       const method = req.method;
       if (!['GET','POST','PUT','DELETE'].includes(method)) fail(405, 'Method is not allowed.');
+      // Telegram authenticates with its configured secret header, never a wallet
+      // cookie. This narrow endpoint is the sole exception to browser Origin checks.
+      if (path === '/api/journal/notifications/telegram/webhook') {
+        if (method !== 'POST') fail(405, 'Method is not allowed.');
+        if (!notificationService) fail(503, 'Notifications are not configured.');
+        if (!notificationService.acceptsWebhook(req.headers['x-telegram-bot-api-secret-token']))
+          fail(403, 'Invalid notification webhook.');
+        await notificationService.handleTelegramUpdate(await readJson(req));
+        return send(200, { ok: true });
+      }
       if (method !== 'GET' && req.headers.origin !== origin) fail(403, 'Request origin is not allowed.');
+      if (method === 'GET' && path === '/api/journal/notifications/capabilities')
+        return send(200, notificationService?.capabilities() ?? { enabled: false, botUsername: 'BEMineNotifyBot' });
       if (method === 'GET' && path === '/api/journal/official-candidates')
         return send(200, await officialCandidates(url));
       if (method === 'POST' && path === '/api/journal/challenge') {
@@ -956,6 +1004,14 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
       const expectedAccount = req.headers['x-pinkuang-account'];
       if (expectedAccount !== undefined && identity(expectedAccount) !== account)
         fail(409, 'Wallet session has switched accounts. Reconnect the selected wallet.');
+      if (path.startsWith('/api/journal/notifications/')) {
+        if (!expectedAccount) fail(400, 'The selected wallet is required.');
+        if (!notificationService) fail(503, 'Notifications are not configured.');
+        const result = await notificationService.handleWallet({ account, method,
+          path: path.slice('/api/journal/notifications'.length),
+          body: method === 'GET' ? undefined : await readJson(req) });
+        return send(result.status, result.body);
+      }
       if (method === 'GET' && path === '/api/journal/session') return send(200, { account });
       if (method === 'GET' && path === '/api/journal/build') return send(200, { artifactDigest: signingBuildDigest() });
       if (method === 'GET' && path === '/api/journal/deployment') return send(200, store.deployment(account));

@@ -42,7 +42,12 @@ contract AuditMiningSettlementForkTest is Test {
     bytes32 private key;
 
     function setUp() public {
-        require(block.chainid == 56 && block.number == 123728000, "requires pinned BSC fork");
+        if (block.number == 123728000) {
+            emit log("Controlled Firsto sale requires the separate BSC 124308679 fixture command");
+            vm.skip(true);
+            return;
+        }
+        require(block.chainid == 56 && block.number == 124308679, "requires Firsto fixed-block BSC fork");
         key = MINING.minerKey(Addresses.TAPEOUT_CIRCUITS, TOKEN_ID);
         assertEq(MINING.getMiner(key).status, 1);
         PoolTimelock timelock = new PoolTimelock(OWNER);
@@ -161,9 +166,9 @@ contract AuditMiningSettlementForkTest is Test {
             vault.vote(proposal, true);
         }
         vault.executeSale(proposal);
-        vm.deal(BUYER, SALE_PRICE);
+        vm.deal(BUYER, SALE_PRICE + SALE_PRICE / 100);
         vm.prank(BUYER);
-        vault.completeSale{value: SALE_PRICE}();
+        vault.completeFirstoSale{value: SALE_PRICE + SALE_PRICE / 100}(proposal, SALE_PRICE, 100, 1);
         assertEq(uint256(vault.state()), uint256(IPoolVault.State.Closed));
         assertEq(NFT.ownerOf(TOKEN_ID), BUYER);
         assertEq(BEM.totalSupply(), supplyBefore, "zero settlement never fabricates a successful reward claim");

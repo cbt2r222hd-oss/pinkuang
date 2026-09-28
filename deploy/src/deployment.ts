@@ -16,6 +16,7 @@ export const IMPLEMENTATION_SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc
 export const LIBRARY_NAMES = [
   'FlexiblePurchase', 'MiningOperations', 'PoolFunds', 'PurchaseValidation',
   'RewardAccounting', 'SaleGovernance', 'SaleSettlement', 'ShareCheckpoints',
+  'FirstoSale',
 ] as const;
 
 /** Current execution dependencies only; existence does not certify the protocols. */
@@ -25,6 +26,8 @@ export const PROTOCOL_ADDRESSES: Record<string, string> = {
   MINING: '0x7E2E0DC66a3bD9103E69b766afA62d9f7b697b46',
   CIRCUIT_MARKET: '0x6feEbbEbC07BcB90bd1Ac8b0CF9BaA4f0fF2B46f',
   BEM: '0x5ce033B2bFCa3Af30b3e8C8457DeaF776A8b695a',
+  FIRSTO_SIGNED_ASK_V2: '0x33423244F9a5bF81b12B1a018aF6F4e079B97f29',
+  PROTOCOL_FACTORY: '0x68224F668083c29e9800Be2a646d42d18cedF7e2',
 };
 
 export type ByteRange = { start: number; length: number };
@@ -103,6 +106,7 @@ export interface DeploymentVerification {
 }
 export interface DeploymentSnapshot {
   schemaVersion: 1;
+  kind?: 'integrated-v2';
   id: string;
   chainId: 56;
   account: string;
@@ -132,7 +136,8 @@ export interface DeploymentCallbacks {
 }
 
 const MULTISIG_ABI = ['function getThreshold() view returns(uint256)', 'function getOwners() view returns(address[])'];
-const REQUIRED_ARTIFACTS = [...LIBRARY_NAMES, 'AtomicDeployment', 'PoolVault', 'PoolFactory', 'ShareMarket', 'PoolTimelock', 'PoolBeacon', 'ERC1967Proxy', 'PoolLens'];
+const REQUIRED_ARTIFACTS = [...LIBRARY_NAMES, 'AtomicDeployment', 'PoolVault', 'PoolFactory', 'ShareMarket', 'BudgetPortfolioFactory', 'BudgetPortfolioVault', 'PoolTimelock', 'PoolBeacon', 'ERC1967Proxy', 'PoolLens'];
+export const INTEGRATED_TRANSACTION_COUNT = LIBRARY_NAMES.length + 7;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const isAborted = (snapshot: DeploymentSnapshot): boolean => snapshot.status === 'aborted';
 const receiptRecord = (receipt: TransactionReceipt): NonNullable<StepRecord['receipt']> => ({
@@ -221,6 +226,7 @@ export function validateArtifacts(bundle: ArtifactBundle): void {
     new Interface(artifact.abi);
   }
   assert(new Interface(bundle.artifacts.AtomicDeployment.abi).getFunction('deploySingleOwner'), '构建缺少单钱包部署入口。');
+  assert(new Interface(bundle.artifacts.AtomicDeployment.abi).getFunction('deployIntegratedSingleOwner'), '构建缺少多机项目集成部署入口。');
   libraryDeploymentOrder(bundle);
 }
 
@@ -324,7 +330,7 @@ export async function preflight(wallet: Eip1193Provider, bundle: ArtifactBundle,
   const libraryOrder = libraryDeploymentOrder(bundle);
   const report: PreflightReport = {
     chainId: 56, account, ...current, artifactDigest: artifactDigest(bundle),
-    owner, treasury, protocols: Object.fromEntries(protocolEntries), libraryOrder, transactionCount: libraryOrder.length + 5,
+    owner, treasury, protocols: Object.fromEntries(protocolEntries), libraryOrder, transactionCount: libraryOrder.length + 7,
     warnings: [
       input.governanceMode === 'single' ? '单钱包控制管理和升级提案：密钥丢失或泄露会影响全部合约；48 小时延迟不能保证阻止恶意升级。' : 'getOwners / getThreshold 只验证接口配置，不能认证多签实现、模块或实际控制权。',
       '协议地址代码非空检查不等于协议安全审计；小额主网测试仍会消耗真实 BNB。',
@@ -392,12 +398,13 @@ export class DeploymentEngine {
     return this.exclusive(async () => {
       if (this.callbacks.readLatest) assert(await this.callbacks.readLatest() === null, '已有部署记录；请先恢复或导出并归档现有记录。');
       const input = normalizeInput(rawInput);
+      assert(input.governanceMode === 'single', '本次完整部署使用已确认的单钱包管理；旧多签部署记录仅供核对恢复。');
       const report = await freshPreflight(this.wallet, this.bundle, input, reviewed);
       const now = new Date().toISOString();
       const snapshot: DeploymentSnapshot = {
-        schemaVersion: 1, id: `${Date.now()}-${report.account}`, chainId: 56, account: report.account,
+        schemaVersion: 1, kind: 'integrated-v2', id: `${Date.now()}-${report.account}`, chainId: 56, account: report.account,
         createdAt: now, updatedAt: now, artifactDigest: report.artifactDigest, sourceCommit: this.bundle.sourceCommit,
-        input, status: 'ready', steps: this.stepIds().map(id => ({ id, label: id === 'initialize' ? '原子初始化治理与代理' : id, status: 'waiting' })),
+        input, status: 'ready', steps: this.stepIds('integrated-v2').map(id => ({ id, label: id === 'initialize' ? '原子初始化单机与多机项目' : id, status: 'waiting' })),
         addresses: {}, spentWei: '0', preflight: report,
       };
       await this.save(snapshot);
@@ -457,7 +464,7 @@ export class DeploymentEngine {
     assert(snapshot.schemaVersion === 1 && snapshot.chainId === 56, '部署记录格式或网络错误。');
     assert(snapshot.artifactDigest === artifactDigest(this.bundle), '构建产物已改变，不能导出旧部署清单。');
     assert(snapshot.status === 'complete' && snapshot.steps.every(step => step.status === 'confirmed'), '仅已完成的部署可导出清单。');
-    assert(JSON.stringify(snapshot.steps.map(step => step.id)) === JSON.stringify(this.stepIds()), '部署步骤与当前构建不匹配。');
+    assert(JSON.stringify(snapshot.steps.map(step => step.id)) === JSON.stringify(this.stepIds(snapshot.kind)), '部署步骤与当前构建不匹配。');
     snapshot.input = normalizeInput(snapshot.input);
     if (snapshot.input.governanceMode === 'single') assert(sameAddress(snapshot.input.ownerMultisig, snapshot.account), '记录中的单钱包管理地址不匹配部署账户。');
     await walletAccount(this.wallet, snapshot.account);
@@ -620,7 +627,12 @@ export class DeploymentEngine {
     });
   }
 
-  private stepIds(): string[] { return [...libraryDeploymentOrder(this.bundle), 'AtomicDeployment', 'PoolVault', 'PoolFactory', 'ShareMarket', 'initialize']; }
+  private stepIds(kind?: DeploymentSnapshot['kind']): string[] {
+    assert(kind === undefined || kind === 'integrated-v2', '部署版本不支持。');
+    const libraries = libraryDeploymentOrder(this.bundle).filter(name => kind === 'integrated-v2' || name !== 'FirstoSale');
+    return [...libraries, 'AtomicDeployment', 'PoolVault', 'PoolFactory', 'ShareMarket',
+      ...(kind === 'integrated-v2' ? ['BudgetPortfolioFactory', 'BudgetPortfolioVault'] : []), 'initialize'];
+  }
 
   private async latestSnapshot(saved: DeploymentSnapshot): Promise<DeploymentSnapshot> {
     if (!this.callbacks.readLatest) return clone(saved);
@@ -666,7 +678,7 @@ export class DeploymentEngine {
     snapshot.input = normalizeInput(snapshot.input);
     await walletAccount(this.wallet, snapshot.account);
     if (snapshot.input.governanceMode === 'single') assert(sameAddress(snapshot.input.ownerMultisig, snapshot.account), '记录中的单钱包管理地址不匹配部署账户。');
-    assert(JSON.stringify(snapshot.steps.map(step => step.id)) === JSON.stringify(this.stepIds()), '部署步骤与当前构建不匹配。');
+    assert(JSON.stringify(snapshot.steps.map(step => step.id)) === JSON.stringify(this.stepIds(snapshot.kind)), '部署步骤与当前构建不匹配。');
     let aborted = snapshot.status === 'aborted' || snapshot.steps.some(step => !!step.replacementHash);
     snapshot.status = aborted ? 'aborted' : 'paused';
     delete snapshot.verification;
@@ -718,17 +730,23 @@ export class DeploymentEngine {
   private async transaction(snapshot: DeploymentSnapshot, step: StepRecord): Promise<TransactionRequest> {
     if (step.id === 'initialize') {
       const iface = new Interface(this.bundle.artifacts.AtomicDeployment.abi);
-      return { to: snapshot.addresses.AtomicDeployment, value: 0n, data: iface.encodeFunctionData(snapshot.input.governanceMode === 'single' ? 'deploySingleOwner' : 'deploy', [{
+      const core = {
         ownerMultisig: snapshot.input.ownerMultisig, operator: snapshot.input.operator, treasury: snapshot.input.treasury,
         vaultImplementation: snapshot.addresses.PoolVault, factoryImplementation: snapshot.addresses.PoolFactory, marketImplementation: snapshot.addresses.ShareMarket,
-      }]) };
+      };
+      const integrated = snapshot.kind === 'integrated-v2';
+      if (integrated) assert(snapshot.input.governanceMode === 'single', '集成部署的治理模式与已确认方案不同。');
+      return { to: snapshot.addresses.AtomicDeployment, value: 0n, data: iface.encodeFunctionData(
+        integrated ? 'deployIntegratedSingleOwner' : snapshot.input.governanceMode === 'single' ? 'deploySingleOwner' : 'deploy',
+        [integrated ? { core, portfolioFactoryImplementation: snapshot.addresses.BudgetPortfolioFactory,
+          portfolioVaultImplementation: snapshot.addresses.BudgetPortfolioVault } : core]) };
     }
     const artifact = this.bundle.artifacts[step.id];
     const code = linkBytecode(artifact.bytecode, artifact.linkReferences, snapshot.addresses);
     const args: unknown[] = [];
-    if (step.id === 'PoolVault') {
+    if (step.id === 'PoolVault' || step.id === 'BudgetPortfolioVault') {
       const coordinator = new Contract(snapshot.addresses.AtomicDeployment, this.bundle.artifacts.AtomicDeployment.abi, this.provider);
-      args.push(await coordinator.predictedFactory());
+      args.push(await coordinator[step.id === 'PoolVault' ? 'predictedFactory' : 'predictedPortfolioFactory']());
     }
     return new ContractFactory(artifact.abi, code).getDeployTransaction(...args);
   }
@@ -865,11 +883,11 @@ export class DeploymentEngine {
       snapshot.addresses[step.id] = address; step.address = address; step.codehash = keccak256(code);
       const contract = new Contract(address, this.bundle.artifacts[step.id].abi, this.provider);
       if (step.id === 'AtomicDeployment') assert(sameAddress(await contract.deployer(), snapshot.account), '协调器固定部署者不匹配。');
-      if (step.id === 'PoolVault') {
+      if (step.id === 'PoolVault' || step.id === 'BudgetPortfolioVault') {
         const coordinator = new Contract(snapshot.addresses.AtomicDeployment, this.bundle.artifacts.AtomicDeployment.abi, this.provider);
-        assert(sameAddress(await contract.OFFICIAL_FACTORY(), await coordinator.predictedFactory()), 'Vault immutable 工厂绑定不匹配。');
+        assert(sameAddress(await contract.OFFICIAL_FACTORY(), await coordinator[step.id === 'PoolVault' ? 'predictedFactory' : 'predictedPortfolioFactory']()), 'Vault immutable 工厂绑定不匹配。');
       }
-      if (step.id === 'PoolFactory' || step.id === 'ShareMarket') assert((await contract.proxiableUUID()).toLowerCase() === IMPLEMENTATION_SLOT, '实现不是预期 UUPS 存储槽。');
+      if (['PoolFactory', 'ShareMarket', 'BudgetPortfolioFactory'].includes(step.id)) assert((await contract.proxiableUUID()).toLowerCase() === IMPLEMENTATION_SLOT, '实现不是预期 UUPS 存储槽。');
     }
     if (initializationExecution?.kind === 'wrapped') {
       await this.finalizedReplacement(snapshot, step, receipt.hash);
@@ -903,6 +921,15 @@ export class DeploymentEngine {
     const result = await coordinator.deployment(atBlock);
     const addresses = { timelock: getAddress(result.timelock), beacon: getAddress(result.beacon), factory: getAddress(result.factory), shareMarket: getAddress(result.shareMarket) };
     Object.assign(snapshot.addresses, addresses);
+    if (snapshot.kind === 'integrated-v2') {
+      const portfolio = await coordinator.portfolioDeployment(atBlock);
+      Object.assign(snapshot.addresses, {
+        portfolioFactory: getAddress(portfolio.factory), portfolioBeacon: getAddress(portfolio.beacon),
+        portfolioShareMarket: getAddress(portfolio.shareMarket),
+        portfolioFactoryImplementation: snapshot.addresses.BudgetPortfolioFactory,
+        portfolioVaultImplementation: snapshot.addresses.BudgetPortfolioVault,
+      });
+    }
     const factory = new Contract(addresses.factory, this.bundle.artifacts.PoolFactory.abi, this.provider);
     const lensAddress = getAddress(await factory.lens(atBlock));
     assert(lensAddress !== ZeroAddress, 'Factory 尚未创建 Lens。');
@@ -930,16 +957,22 @@ export class DeploymentEngine {
     })();
     // These reads are independent. Run them together and reuse each runtime bytecode
     // for both its codehash and the compiled-runtime comparison.
+    const codeReads = new Map<string, Promise<string>>();
+    const readCode = (address: string) => {
+      const key = address.toLowerCase();
+      if (!codeReads.has(key)) codeReads.set(key, this.provider.getCode(address, blockTag));
+      return codeReads.get(key)!;
+    };
     const [deployed, predictedFactory, factoryLens, lensFactory, factoryBindings, beaconBindings, marketBindings,
       delays, roleChecks, slots, poolCount, observedCodes] = await Promise.all([
       coordinator.deployed(atBlock), coordinator.predictedFactory(atBlock), factory.lens(atBlock), lens.factory(atBlock),
       Promise.all(Object.keys(factoryExpected).map(getter => factory[getter](atBlock))),
       Promise.all([beacon.owner(atBlock), beacon.implementation(atBlock), beacon.OFFICIAL_FACTORY(atBlock)]),
-      Promise.all([market.factory(atBlock), market.timelock(atBlock)]),
+      Promise.all([market.factory(atBlock), market.timelock(atBlock), market.feeBps(atBlock), market.buyerFeeBps(atBlock), market.ORDER_DURATION(atBlock)]),
       Promise.all([timelock.getMinDelay(atBlock), timelock.MINIMUM_DELAY(atBlock)]), roles,
       Promise.all([this.provider.getStorage(addresses.factory, IMPLEMENTATION_SLOT, blockTag), this.provider.getStorage(addresses.shareMarket, IMPLEMENTATION_SLOT, blockTag)]),
       factory.poolCount(atBlock),
-      Promise.all(Object.entries(snapshot.addresses).map(async ([name, address]) => [name, address, await this.provider.getCode(address, blockTag)] as const)),
+      Promise.all(Object.entries(snapshot.addresses).map(async ([name, address]) => [name, address, await readCode(address)] as const)),
     ]);
     check('协调器初始化完成', deployed, true);
     check('Factory CREATE 绑定', addresses.factory, predictedFactory);
@@ -951,6 +984,9 @@ export class DeploymentEngine {
     check('Beacon.OFFICIAL_FACTORY', beaconBindings[2], addresses.factory);
     check('Market.factory', marketBindings[0], addresses.factory);
     check('Market.timelock', marketBindings[1], addresses.timelock);
+    check('Market.feeBps', marketBindings[2], 100);
+    check('Market.buyerFeeBps', marketBindings[3], 100);
+    check('Market.ORDER_DURATION', marketBindings[4], 7 * 86400);
     check('升级最小延迟', delays[0], UPGRADE_DELAY_SECONDS);
     check('延迟硬下限', delays[1], UPGRADE_DELAY_SECONDS);
     const roleLabels = ['管理地址提案权', '管理地址取消权', '到期公开执行', 'Timelock 自管理', '部署者没有 Timelock admin', '协调器没有 Timelock admin'];
@@ -960,11 +996,45 @@ export class DeploymentEngine {
     check('Market UUPS 实现槽', slotAddress(slots[1]), snapshot.addresses.ShareMarket);
     if (requireInitialEmpty) check('初始池子数量', poolCount, 0);
     else checks.push({ label: '当前池子数量', passed: true, actual: poolCount.toString(), expected: '部署完成后允许创建资金池' });
+    if (snapshot.kind === 'integrated-v2') {
+      const pf = new Contract(snapshot.addresses.portfolioFactory, this.bundle.artifacts.BudgetPortfolioFactory.abi, this.provider);
+      const pb = new Contract(snapshot.addresses.portfolioBeacon, this.bundle.artifacts.PoolBeacon.abi, this.provider);
+      const pm = new Contract(snapshot.addresses.portfolioShareMarket, this.bundle.artifacts.ShareMarket.abi, this.provider);
+      const pv = new Contract(snapshot.addresses.BudgetPortfolioVault, this.bundle.artifacts.BudgetPortfolioVault.abi, this.provider);
+      const expected = { owner: snapshot.input.ownerMultisig, operator: snapshot.input.operator, treasury: snapshot.input.treasury,
+        timelock: addresses.timelock, beacon: snapshot.addresses.portfolioBeacon, legacyFactory: addresses.factory,
+        shareMarket: snapshot.addresses.portfolioShareMarket };
+      const [bindings, predicted, beaconValues, marketValues, vaultFactory, portfolioSlots, count] = await Promise.all([
+        Promise.all(Object.keys(expected).map(getter => pf[getter](atBlock))), coordinator.predictedPortfolioFactory(atBlock),
+        Promise.all([pb.owner(atBlock), pb.implementation(atBlock), pb.OFFICIAL_FACTORY(atBlock)]),
+        Promise.all([pm.factory(atBlock), pm.timelock(atBlock), pm.feeBps(atBlock), pm.buyerFeeBps(atBlock), pm.ORDER_DURATION(atBlock)]),
+        pv.OFFICIAL_FACTORY(atBlock),
+        Promise.all([this.provider.getStorage(snapshot.addresses.portfolioFactory, IMPLEMENTATION_SLOT, blockTag),
+          this.provider.getStorage(snapshot.addresses.portfolioShareMarket, IMPLEMENTATION_SLOT, blockTag)]), pf.portfolioCount(atBlock),
+      ]);
+      Object.entries(expected).forEach(([key, value], index) => check(`PortfolioFactory.${key}`, bindings[index], value));
+      check('PortfolioFactory CREATE 绑定', snapshot.addresses.portfolioFactory, predicted);
+      check('PortfolioBeacon.owner', beaconValues[0], addresses.timelock);
+      check('PortfolioBeacon.implementation', beaconValues[1], snapshot.addresses.BudgetPortfolioVault);
+      check('PortfolioBeacon.OFFICIAL_FACTORY', beaconValues[2], snapshot.addresses.portfolioFactory);
+      check('PortfolioVault.OFFICIAL_FACTORY', vaultFactory, snapshot.addresses.portfolioFactory);
+      check('PortfolioMarket.factory', marketValues[0], snapshot.addresses.portfolioFactory);
+      check('PortfolioMarket.timelock', marketValues[1], addresses.timelock);
+      check('PortfolioMarket.feeBps', marketValues[2], 100);
+      check('PortfolioMarket.buyerFeeBps', marketValues[3], 100);
+      check('PortfolioMarket.ORDER_DURATION', marketValues[4], 7 * 86400);
+      check('PortfolioFactory UUPS 实现槽', slotAddress(portfolioSlots[0]), snapshot.addresses.BudgetPortfolioFactory);
+      check('PortfolioMarket UUPS 实现槽', slotAddress(portfolioSlots[1]), snapshot.addresses.ShareMarket);
+      if (requireInitialEmpty) check('初始多机项目数量', count, 0);
+      else checks.push({ label: '当前多机项目数量', passed: true, actual: count.toString(), expected: '部署完成后允许创建多机项目' });
+    }
     const code: Record<string, CodeRecord> = {};
     for (const [name, address, runtime] of observedCodes) {
       assert(runtime !== '0x', `${address} 没有合约代码。`);
       code[name] = { address: getAddress(address), codehash: keccak256(runtime), codeBytes: (runtime.length - 2) / 2 };
-      const artifactName = ({ factory: 'ERC1967Proxy', shareMarket: 'ERC1967Proxy', timelock: 'PoolTimelock', beacon: 'PoolBeacon', lens: 'PoolLens' } as Record<string, string>)[name] ?? name;
+      const artifactName = ({ factory: 'ERC1967Proxy', shareMarket: 'ERC1967Proxy', timelock: 'PoolTimelock', beacon: 'PoolBeacon', lens: 'PoolLens',
+        portfolioFactory: 'ERC1967Proxy', portfolioShareMarket: 'ERC1967Proxy', portfolioBeacon: 'PoolBeacon',
+        portfolioFactoryImplementation: 'BudgetPortfolioFactory', portfolioVaultImplementation: 'BudgetPortfolioVault' } as Record<string, string>)[name] ?? name;
       check(`${name} 运行代码匹配`, runtimeMatches(this.bundle.artifacts[artifactName], runtime, snapshot.addresses, address), true);
     }
     const [currentBlock] = await Promise.all([this.provider.getBlock(blockTag), walletAccount(this.wallet, snapshot.account)]);

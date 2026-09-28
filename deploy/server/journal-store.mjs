@@ -237,7 +237,7 @@ function validateDeploymentProgress(previous, next) {
     throw new JournalConflict('Aborted deployment can only be archived.');
   const { maxGasBudgetBnb: oldBudget, gasPriceCapGwei: oldGasCap, ...oldInput } = previous.input;
   const { maxGasBudgetBnb: newBudget, gasPriceCapGwei: newGasCap, ...newInput } = next.input;
-  if (previous.chainId !== next.chainId || previous.account.toLowerCase() !== next.account.toLowerCase()
+  if (previous.kind !== next.kind || previous.chainId !== next.chainId || previous.account.toLowerCase() !== next.account.toLowerCase()
     || previous.artifactDigest !== next.artifactDigest || previous.sourceCommit !== next.sourceCommit
     || !same(oldInput, newInput) || !/^\d+(?:\.\d+)?$/.test(oldBudget) || !/^\d+(?:\.\d+)?$/.test(newBudget)
     || !/^\d+(?:\.\d+)?$/.test(oldGasCap) || !/^\d+(?:\.\d+)?$/.test(newGasCap)

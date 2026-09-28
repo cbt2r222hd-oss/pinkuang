@@ -45,13 +45,14 @@ test('nested purchase dependencies and all reviewed libraries precede PoolVault 
   const order = linkedDeploymentOrder(document.artifacts);
   for (const name of libraryNames) {
     assert(order.indexOf(name) < order.indexOf('PoolVault'));
-    if (name !== 'FlexiblePurchase') {
+    if (!['FlexiblePurchase', 'FirstoSale'].includes(name)) {
       assert.deepEqual(document.artifacts[name].linkReferences, {});
       assert.deepEqual(document.artifacts[name].deployedLinkReferences, {});
     }
   }
   assert(order.indexOf('PurchaseValidation') < order.indexOf('FlexiblePurchase'));
   assert(order.indexOf('PoolFunds') < order.indexOf('FlexiblePurchase'));
+  assert(order.indexOf('SaleSettlement') < order.indexOf('FirstoSale'));
   assert.throws(() => linkedDeploymentOrder({ Example: { linkReferences: { 'missing.sol': { Missing: [] } } } }), /Missing artifact/);
   assert.throws(() => linkedDeploymentOrder({ Loop: { linkReferences: { 'loop.sol': { Loop: [] } } } }), /Circular/);
 });
@@ -61,6 +62,10 @@ test('deployment ABI retains prediction, role validation, binding and post-deplo
   assert(atomic.getFunction('predictedFactory()'));
   assert(atomic.getFunction('deploy((address,address,address,address,address,address))'));
   assert(atomic.getFunction('deploySingleOwner((address,address,address,address,address,address))'));
+  assert(atomic.getFunction('deployIntegratedSingleOwner'));
+  assert(atomic.getFunction('predictedPortfolioFactory()'));
+  assert(atomic.getFunction('portfolioDeployment()'));
+  assert(atomic.getEvent('IntegratedDeploymentCompleted'));
   assert(atomic.getFunction('deployer()'));
   assert(atomic.getFunction('deployment()'));
   assert(atomic.getEvent('DeploymentCompleted'));
@@ -71,6 +76,8 @@ test('deployment ABI retains prediction, role validation, binding and post-deplo
   assert(vault.getFunction('OFFICIAL_FACTORY()'));
   assert(vault.getFunction('claim()'));
   assert(vault.getFunction('harvest()'));
+  assert(vault.getFunction('completeFirstoSale(uint256,uint256,uint16,uint256)'));
+  assert(vault.getFunction('controlledFirstoSaleVersion()'));
   assert.equal(vault.getFunction('claimFor(address)'), null);
   assert(Object.keys(document.artifacts.PoolVault.immutableReferences).length > 0);
   assert(new Interface(document.artifacts.PoolBeacon.abi).getFunction('implementation()'));

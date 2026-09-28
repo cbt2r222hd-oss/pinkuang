@@ -7,12 +7,14 @@ import {ShareTransferTestBase} from "./ShareTransferTestBase.sol";
 import {IRewardsVault} from "./RewardsTestBase.sol";
 import {PoolVault} from "../../src/PoolVault.sol";
 import {IPoolVault} from "../../src/interfaces/IPoolVault.sol";
+import {FirstoSignedAskMock} from "./FirstoMocks.sol";
 
 interface ISaleVault {
     function executeSale(uint256 proposalId) external;
     function relist(uint256 proposalId) external;
     function cancelExpired() external;
     function completeSale() external payable;
+    function completeFirstoSale(uint256 proposalId, uint256 price, uint16 feeBps, uint256 epoch) external payable;
     function settleSale() external;
     function state() external view returns (IPoolVault.State);
     function listedProposalId() external view returns (uint256);
@@ -58,7 +60,8 @@ contract SaleCallbackBuyer is IERC721Receiver {
 
     function buy(address vault_) external payable {
         vault = vault_;
-        ISaleVault(vault_).completeSale{value: msg.value}();
+        ISaleVault target = ISaleVault(vault_);
+        target.completeFirstoSale{value: msg.value}(target.listedProposalId(), target.salePrice(), 0, 1);
     }
 
     function setRejectBnb(bool rejected) external {
@@ -94,9 +97,16 @@ abstract contract SaleTestBase is ShareTransferTestBase {
     uint256 internal constant SALE_PRICE = 10 ether;
     PoolVault internal saleVault;
     ISaleVault internal sale;
+    address internal constant FIRSTO = 0x33423244F9a5bF81b12B1a018aF6F4e079B97f29;
+    uint256 internal lastPassedSaleProposal;
 
     function setUp() public virtual override {
         super.setUp();
+        vm.chainId(56);
+        vm.etch(FIRSTO, address(new FirstoSignedAskMock()).code);
+        // Existing settlement/accounting regressions use a zero source fee;
+        // FirstoSaleTest separately exercises the real 100-bps buyer fee.
+        FirstoSignedAskMock(FIRSTO).configure(0x68224F668083c29e9800Be2a646d42d18cedF7e2, 0, 1);
         _useSalePool();
     }
 
@@ -126,6 +136,7 @@ abstract contract SaleTestBase is ShareTransferTestBase {
             saleVault.vote(id, true);
         }
         assertTrue(saleVault.proposalPassed(id));
+        lastPassedSaleProposal = id;
     }
 
     function _listSale(uint256 price) internal returns (uint256 id) {
@@ -137,7 +148,7 @@ abstract contract SaleTestBase is ShareTransferTestBase {
     function _complete(address buyer, uint256 price) internal {
         vm.deal(buyer, buyer.balance + price);
         vm.prank(buyer);
-        sale.completeSale{value: price}();
+        sale.completeFirstoSale{value: price}(lastPassedSaleProposal, price, 0, 1);
     }
 
     function _withdraw(address member) internal returns (uint256 received) {

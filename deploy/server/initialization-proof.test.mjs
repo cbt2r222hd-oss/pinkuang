@@ -7,7 +7,7 @@ const iface = new Interface(INITIALIZATION_PROOF_ABI);
 const addr = n => `0x${n.toString(16).padStart(40, '0')}`;
 const hash = n => `0x${n.toString(16).padStart(64, '0')}`;
 
-export function initializationProofFixture({ wrapped = true, mode = 'single' } = {}) {
+export function initializationProofFixture({ wrapped = true, mode = 'single',integrated=false } = {}) {
   const account = addr(1), coordinator = addr(10);
   const record = {
     chainId: 56, account,
@@ -15,12 +15,14 @@ export function initializationProofFixture({ wrapped = true, mode = 'single' } =
     addresses: { AtomicDeployment: coordinator, PoolVault: addr(11), PoolFactory: addr(12), ShareMarket: addr(13) },
     steps: [],
   };
+  if(integrated){record.kind='integrated-v2';Object.assign(record.addresses,{BudgetPortfolioFactory:addr(14),BudgetPortfolioVault:addr(15)});}
   for (const [index, [id, address]] of Object.entries(record.addresses).entries()) {
     record.steps.push({ id, status: 'confirmed', address, codehash: hash(50 + index) });
   }
   const config = { ...record.input, vaultImplementation: record.addresses.PoolVault,
     factoryImplementation: record.addresses.PoolFactory, marketImplementation: record.addresses.ShareMarket };
-  const inner = iface.encodeFunctionData(mode === 'single' ? 'deploySingleOwner' : 'deploy', [config]);
+  const inner = iface.encodeFunctionData(integrated?'deployIntegratedSingleOwner':mode === 'single' ? 'deploySingleOwner' : 'deploy',
+    [integrated?{core:config,portfolioFactoryImplementation:record.addresses.BudgetPortfolioFactory,portfolioVaultImplementation:record.addresses.BudgetPortfolioVault}:config]);
   const step = { id: 'initialize', status: 'submitted', nonce: 1148, txHash: hash(100), dataHash: keccak256(inner) };
   record.steps.push(step);
   const tx = {
@@ -41,6 +43,11 @@ export function initializationProofFixture({ wrapped = true, mode = 'single' } =
       config.factoryImplementation, record.steps[2].codehash, config.marketImplementation, record.steps[3].codehash]],
     ['SingleOwnerDeployment', [config.ownerMultisig, addresses.factory]],
   ];
+  if(integrated){addresses.portfolioFactory=getCreateAddress({from:coordinator,nonce:5});addresses.portfolioBeacon=getCreateAddress({from:coordinator,nonce:4});
+    addresses.portfolioShareMarket=getCreateAddress({from:addresses.portfolioFactory,nonce:1});
+    events.push(['IntegratedDeploymentCompleted',[factory,addresses.portfolioFactory,addresses.portfolioBeacon,addresses.portfolioShareMarket,addresses.timelock]],
+      ['PortfolioImplementationsRecorded',[record.addresses.BudgetPortfolioFactory,record.steps[4].codehash,record.addresses.BudgetPortfolioVault,record.steps[5].codehash]]);
+  }
   const receipt = {
     hash: tx.hash, from: tx.from, to: tx.to, status: 1, blockNumber: tx.blockNumber, blockHash: tx.blockHash,
     logs: events.map(([name, args], index) => ({
@@ -59,6 +66,16 @@ test('strict initialization proof recognizes exact direct single and multisig ca
     assert.equal(proof.kind, 'direct');
     assert.equal(proof.outerDataHash, fixture.step.dataHash);
     assert.deepEqual(proof.addresses, fixture.addresses);
+  }
+});
+
+test('integrated recovery requires both exact graphs and all five coordinator events',()=>{
+  for(const wrapped of [false,true]){
+    const fixture=initializationProofFixture({wrapped,integrated:true});
+    const result=verifyInitializationExecution(fixture);assert.deepEqual(result.addresses,fixture.addresses);
+    if(wrapped)for(const mutate of [f=>f.receipt.logs.pop(),f=>f.record.addresses.BudgetPortfolioVault=addr(99),f=>f.receipt.logs[3].data+='00']){
+      const invalid=structuredClone(fixture);mutate(invalid);assert.throws(()=>verifyInitializationExecution(invalid));
+    }
   }
 });
 

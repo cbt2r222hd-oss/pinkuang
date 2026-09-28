@@ -150,7 +150,16 @@ async function context(provider, config, account) {
 export async function readOperatorStatus({ provider, config, account }) {
   const ctx = await context(provider, config, account);
   const machineRegistry = await readMachineRegistry(provider, { factory: ctx.factory, blockTag: ctx.tag });
-  await ctx.verify(); return Object.freeze({ ...ctx.status, machineRegistry });
+  let portfolioOperator = null;
+  if (config?.kind === 'integrated-v2') {
+    try {
+      const { readPortfolioContext } = await import('./live-portfolios.mjs');
+      const budget = await readPortfolioContext(config, provider, ctx.status.blockNumber);
+      await budget.canonical(); portfolioOperator = budget.operator;
+    } catch { /* An unavailable budget deployment cannot grant extra operator access. */ }
+  }
+  await ctx.verify(); return Object.freeze({ ...ctx.status, machineRegistry, portfolioOperator,
+    isPortfolioOperator: portfolioOperator !== null && same(portfolioOperator, ctx.from) });
 }
 
 /** Read and simulate only. The returned immutable request freezes relative deadlines for confirmation. */

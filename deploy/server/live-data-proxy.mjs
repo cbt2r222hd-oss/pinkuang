@@ -55,12 +55,14 @@ function natural(value, max = Number.MAX_SAFE_INTEGER) {
 export function validateIndexRequest(url) {
   const route = url.pathname.slice('/api/chain-index'.length);
   const routes = {
-    '/health': [], '/v1/stats': [], '/v1/pools': ['cursor', 'limit'],
+    '/health': [], '/v1/stats': [], '/v1/pools': ['cursor', 'limit'], '/v1/portfolios':['cursor','limit'],
     '/v1/orders': ['pool', 'seller', 'active', 'cursor', 'limit'],
+    '/v1/portfolio-orders':['pool','seller','active','cursor','limit'],
     '/v1/activity': ['pool', 'account', 'cursor', 'limit'],
     '/v1/yield': ['pool', 'account', 'days'],
   };
-  const allowed = /^\/v1\/accounts\/0x[\da-f]{40}\/pools$/i.test(route) ? ['cursor', 'limit'] : routes[route];
+  const allowed = /^\/v1\/accounts\/0x[\da-f]{40}\/(pools|portfolios)$/i.test(route)
+    || /^\/v1\/portfolios\/0x[\da-f]{40}\/children$/i.test(route) ? ['cursor', 'limit'] : routes[route];
   requireValue(allowed, 404, 'Unknown read-only index route.');
   const seen = new Set();
   for (const [key, value] of url.searchParams) {
@@ -70,7 +72,7 @@ export function validateIndexRequest(url) {
     else if (key === 'active') valid = value === 'true' || value === 'false';
     else if (key === 'limit') valid = natural(value, 50) && Number(value) > 0;
     else if (key === 'days') valid = natural(value, 90) && Number(value) > 0;
-    else if (key === 'cursor') valid = route === '/v1/orders' ? /^[1-9]\d{0,77}$/.test(value) && BigInt(value) < 2n ** 256n
+      else if (key === 'cursor') valid = ['/v1/orders','/v1/portfolio-orders'].includes(route) ? /^[1-9]\d{0,77}$/.test(value) && BigInt(value) < 2n ** 256n
       : route === '/v1/activity' ? /^\d+:\d+:\d+$/.test(value) && value.split(':').every(n => natural(n)) : natural(value);
     requireValue(valid, 400, 'Invalid index query parameter.');
   }

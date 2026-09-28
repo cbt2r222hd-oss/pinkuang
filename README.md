@@ -1,6 +1,8 @@
 # TapeOut 合伙拼矿机
 
-当前任务：**结合 PR #9 页面优化合约与接口**。整机出售费已统一为 1%，筹资保持参考产能价加默认 10% 预留；新增只读 PoolLens、报价模型/权重校验建池、精确金额适配器和源码 ABI 构建校验。对接方式见[页面与合约对接](docs/frontend-contracts.md)，验证见[本轮审计记录](docs/audits/2026-09-26/frontend-contracts.md)。尚未合并或部署主网，`web/` 仍为演示模式；较早报告只代表其对应历史版本。
+当前任务：**整合三台电脑、两个仓库的合约、实际业务前端、通知与部署工作台**。当前分支为 `codex/contracts-v2-integration`；两仓默认 main 仍不是最新产品。来源、用户已确认规则、前端功能检查和待验收项以[统一交接说明](docs/INTEGRATION_HANDOFF.md)为入口。此前报告仅对其记录的提交成立；本次整合尚不表示主网已更新。
+
+整机出售采用用户确认的严格结清方式：买家在本站调用矿池的 `completeFirstoSale`，矿池先归集 BEM，再在同一笔交易内调用固定 Firsto V2 合约成交；原生 Firsto 页面直购暂不开放。交易需核对提案、价格、来源费用 epoch 与最终 NFT/BNB 去向。单机、多机项目分开记账，并在完整部署中一起创建。
 
 最新确认的 BEM 路径为：任何人可将官方收益归集到矿机池合约，再由权益所有人自行领取到自己的钱包；取消 24 小时领取限制。规则与验证见 [收益归集与本人领取](docs/audits/2026-09-26/self-claims.md)。
 
@@ -23,7 +25,8 @@ contracts/       Foundry 配置、地址常量、依赖编译入口
 indexer/         后续 Ponder 索引服务
 api/             后续 API
 keeper/          后续定时领取
-web/             Next.js 设计演示、精确金额与只读合约适配器
+web/             Next.js 真实业务前端、独立设计审查入口、钱包与链上操作
+deploy/          部署页、报价、操作日志、索引、通知、keeper与公共配置
 bot/             后续 grammY 机器人
 scripts/         本地检查、fork 前置检查、升级检查入口
 docs/            原始需求、交付说明、原始日志
@@ -56,7 +59,7 @@ node scripts/check-local.mjs T1e
 在其他英文路径克隆项目时可以直接使用上述 npm 命令。
 
 `npm test` 运行认购退款、购机、挖矿权限、收益、转让、份额市场、出售投票、治理和状态不变量；协议测试另运行 `npm run test:fork`。
-CI 执行 Slither 及明确指定 Factory/Vault/ShareMarket 的升级验证，对照已交付 T1a 至完整 T1e 的真实布局，并检查实际抽取的命名空间和八个固定库链接，兼容/不兼容 fixture 均有验证。CI 证据使用当前 run 的独立临时目录，避免混入仓库已有日志。
+CI 执行 Slither 及明确指定 Factory/Vault/ShareMarket 与预算项目实现的升级验证，对照已交付 T1a 至完整 T1e 的真实布局，并检查实际抽取的命名空间和九个固定库链接，兼容/不兼容 fixture 均有验证。CI 证据使用当前 run 的独立临时目录，避免混入仓库已有日志。
 后续正式升级还必须提供已部署版本的 referenceContract / `@custom:oz-upgrades-from`，不能把本卡 V2 fixture 当作任意未来版本兼容证明。
 
 依赖由 `package-lock.json` 锁定：OpenZeppelin Contracts / Contracts-Upgradeable 5.0.2、

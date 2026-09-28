@@ -47,7 +47,7 @@ contract AuditGovernance is SaleTestBase {
         vm.deal(DAVE, SALE_PRICE);
         vm.prank(DAVE);
         vm.expectRevert(IPoolVault.InvalidProposal.selector);
-        saleVault.completeSale{value: SALE_PRICE}();
+        saleVault.completeFirstoSale{value: SALE_PRICE}(id, SALE_PRICE, 0, 1);
         assertEq(nft.ownerOf(rewardId), address(pool));
         vm.warp(expiry);
         saleVault.cancelExpired();

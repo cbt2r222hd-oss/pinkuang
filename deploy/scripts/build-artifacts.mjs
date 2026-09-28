@@ -12,6 +12,7 @@ export const outputPath = join(repositoryRoot, 'deploy/public/deployment-artifac
 export const libraryNames = Object.freeze([
   'FlexiblePurchase', 'MiningOperations', 'PoolFunds', 'PurchaseValidation',
   'RewardAccounting', 'SaleGovernance', 'SaleSettlement', 'ShareCheckpoints',
+  'FirstoSale',
 ]);
 export const requiredContracts = Object.freeze([
   ...libraryNames, 'AtomicDeployment', 'PoolVault', 'PoolFactory', 'ShareMarket',
@@ -137,8 +138,8 @@ export function validateArtifacts(artifacts) {
       }
     }
   }
-  for (const name of libraryNames) assert.deepEqual(dependencies(artifacts[name]), name === 'FlexiblePurchase' ? ['PoolFunds', 'PurchaseValidation'] : [], `${name} has an unexpected external-library dependency.`);
-  assert.deepEqual(dependencies(artifacts.PoolVault), libraryNames.filter(name => name !== 'PurchaseValidation'), 'PoolVault direct links differ from the reviewed dependency graph.');
+  for (const name of libraryNames) assert.deepEqual(dependencies(artifacts[name]), name === 'FlexiblePurchase' ? ['PoolFunds', 'PurchaseValidation'] : name === 'FirstoSale' ? ['SaleSettlement'] : [], `${name} has an unexpected external-library dependency.`);
+  assert.deepEqual(dependencies(artifacts.PoolVault), libraryNames.filter(name => name !== 'PurchaseValidation').sort(), 'PoolVault direct links differ from the reviewed dependency graph.');
   linkedDeploymentOrder(artifacts);
 }
 

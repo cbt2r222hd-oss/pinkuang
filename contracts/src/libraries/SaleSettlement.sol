@@ -7,9 +7,9 @@ import {IPoolVault} from "../interfaces/IPoolVault.sol";
 import {PoolVaultState} from "../PoolVaultState.sol";
 import {PoolSaleState} from "../PoolSaleState.sol";
 
-/// @notice Accounting and NFT handover for the Vault's approved direct sale.
-/// @dev Vault must hold nonReentrant, require Listed, strictly harvest before
-/// prepare, then enter Closed and credit the treasury before calling handover.
+/// @notice Books the Vault's approved sale before Firsto performs the NFT handover.
+/// @dev Vault holds nonReentrant and strictly harvests first; FirstoSale must verify
+/// exact source payment, final owner and nonce consumption before the transaction returns.
 library SaleSettlement {
     uint256 private constant TOTAL_SHARES = 100;
 
@@ -19,26 +19,34 @@ library SaleSettlement {
     event SaleBudgetRecorded(uint256 indexed proposalId, uint256 amount);
     event SaleCompleted(uint256 gross, uint256 toPlatform, uint256 burnedBem, uint256 toMembers);
 
-    function complete(PoolVaultState.VaultStorage storage v, PoolSaleState.SaleStorage storage s, uint256 settledBem)
-        external
-    {
+    function prepareFirsto(
+        PoolVaultState.VaultStorage storage v,
+        PoolSaleState.SaleStorage storage s,
+        address buyer,
+        uint256 gross,
+        uint256 settledBem
+    ) external {
         // Revalidate legacy listings at payment time: upgrading an already Listed
         // pool cannot bypass the new zero-price and below-cost vote requirements.
         PoolSaleState.Proposal storage proposal = s.proposals[s.listedProposalId];
-        if (msg.value == 0) revert IPoolVault.InvalidSalePrice();
-        bool sharesPassed = msg.value < v.purchaseCost
-            ? proposal.yesShares >= 60
-            : proposal.yesShares * 2 > proposal.snapshotTotalShares;
+        if (gross == 0) revert IPoolVault.InvalidSalePrice();
+        bool sharesPassed =
+            gross < v.purchaseCost ? proposal.yesShares >= 60 : proposal.yesShares * 2 > proposal.snapshotTotalShares;
         if (
-            !proposal.executed || proposal.price != msg.value || proposal.snapshotTotalShares != TOTAL_SHARES
+            !proposal.executed || proposal.price != gross || proposal.snapshotTotalShares != TOTAL_SHARES
                 || proposal.yesCount * 2 <= proposal.snapshotMemberCount || !sharesPassed
         ) revert IPoolVault.ProposalNotPassed();
         address roundingRecipient = _roundingRecipient(v);
-        uint256 fee = _prepare(s, msg.sender, msg.value, v.params.circuits, v.params.circuitId, roundingRecipient);
+        uint256 fee = _prepare(s, buyer, gross, v.params.circuits, v.params.circuitId, roundingRecipient);
         v.state = IPoolVault.State.Closed;
         v.bnbOwed[v.treasury] += fee;
         v.totalBnbOwed += fee;
-        _handover(s, v.params.circuits, v.params.circuitId, settledBem);
+        if (IERC721(v.params.circuits).ownerOf(v.params.circuitId) != address(this)) {
+            revert IPoolVault.NotOwnerAfterBuy();
+        }
+        emit RewardSettledBeforeTransfer(
+            v.params.circuits, v.params.circuitId, address(this), settledBem, s.saleTradeId
+        );
     }
 
     function _prepare(
@@ -68,20 +76,6 @@ library SaleSettlement {
         s.saleRoundingRecipient = roundingRecipient;
         s.legacyBurnBudgetReleased = true;
         s.saleTradeId = keccak256(abi.encode(address(this), s.listedProposalId, buyer, circuits, circuitId, gross));
-    }
-
-    function _handover(PoolSaleState.SaleStorage storage s, address circuits, uint256 circuitId, uint256 settledBem)
-        private
-    {
-        address buyer = s.saleBuyer;
-        if (buyer == address(0)) revert IPoolVault.InvalidListing();
-        IERC721 nft = IERC721(circuits);
-        if (nft.ownerOf(circuitId) != address(this)) revert IPoolVault.NotOwnerAfterBuy();
-        emit RewardSettledBeforeTransfer(circuits, circuitId, address(this), settledBem, s.saleTradeId);
-        nft.safeTransferFrom(address(this), buyer, circuitId);
-        if (nft.ownerOf(circuitId) != buyer) revert IPoolVault.TransferFailed();
-        uint256 fee = s.saleProceeds / 100;
-        emit SaleCompleted(s.saleProceeds, fee, 0, s.saleProceeds - fee);
     }
 
     /// @notice Closed freezes balances; rounding goes to a fixed sale-time holder address.

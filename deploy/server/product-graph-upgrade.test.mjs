@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { Interface, ZeroHash, getAddress, getCreateAddress, keccak256 } from 'ethers';
 import { productGraphConfiguration,verifyProductGraph } from './product-graph.mjs';
 import { FIRSTO_UPGRADE_KIND,FIRSTO_UPGRADE_NAMES,SHARE_FEE_UPGRADE_KIND,upgradeNamesForKind,buildDigest,evidenceDigest,firstoUpgradeBatch,firstoUpgradeDeploymentData,verifyFirstoUpgradeProof } from '../shared/firsto-upgrade-proof.mjs';
 import { generateFirstoUpgradeEvidence } from '../scripts/verify-firsto-upgrade.mjs';
 
-const compiled=JSON.parse(readFileSync(new URL('../public/deployment-artifacts.json',import.meta.url),'utf8'));
+const compiled=JSON.parse(gunzipSync(readFileSync(new URL('../scripts/fixtures/legacy-deployment-artifacts.json.gz',import.meta.url))).toString('utf8'));
 const libraries=['FlexiblePurchase','MiningOperations','PoolFunds','PurchaseValidation','RewardAccounting','SaleGovernance','SaleSettlement','ShareCheckpoints'];
 const names=[...libraries,'AtomicDeployment','PoolVault','PoolFactory','ShareMarket','factory','shareMarket','lens','beacon','timelock'];
 const aliases={factory:'ERC1967Proxy',shareMarket:'ERC1967Proxy',lens:'PoolLens',beacon:'PoolBeacon',timelock:'PoolTimelock'};

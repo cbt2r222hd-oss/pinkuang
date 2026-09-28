@@ -8,9 +8,9 @@ const require = createRequire(import.meta.url);
 const { keccak256 } = require('ethereum-cryptography/keccak');
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const keccak = value => `0x${Buffer.from(keccak256(value)).toString('hex')}`;
-const expectedLibraries = ['FlexiblePurchase', 'MiningOperations', 'PoolFunds', 'PurchaseValidation', 'RewardAccounting', 'SaleGovernance', 'SaleSettlement', 'ShareCheckpoints'];
+const expectedLibraries = ['FirstoSale', 'FlexiblePurchase', 'MiningOperations', 'PoolFunds', 'PurchaseValidation', 'RewardAccounting', 'SaleGovernance', 'SaleSettlement', 'ShareCheckpoints'];
 const directVaultLibraries = expectedLibraries.filter(name => name !== 'PurchaseValidation');
-const nestedLibraries = { FlexiblePurchase: ['PoolFunds', 'PurchaseValidation'] };
+const nestedLibraries = { FlexiblePurchase: ['PoolFunds', 'PurchaseValidation'], FirstoSale: ['SaleSettlement'] };
 const mining = '0x7e2e0dc66a3bd9103e69b766afa62d9f7b697b46';
 
 function readArtifact(root, name) {
@@ -149,6 +149,26 @@ export default function auditLinkedLibraries(root, logRoot) {
   const vault = readArtifact(projectRoot, 'PoolVault');
   const vaultSource = sourceEvidence(projectRoot, 'src/PoolVault.sol', vault.metadata);
   const selectionSource = sourceEvidence(projectRoot, 'src/PurchaseSelectionState.sol', vault.metadata);
+  const executor = readArtifact(projectRoot, 'FirstoSaleExecutor');
+  const executorSource = sourceEvidence(projectRoot, 'src/FirstoSaleExecutor.sol', vault.metadata);
+  const executorDefinition = executor.artifact.ast.nodes.find(node => node.nodeType === 'ContractDefinition' && node.name === 'FirstoSaleExecutor');
+  assert(executorDefinition && executorDefinition.baseContracts.length === 0, 'Unexpected Firsto executor inheritance.');
+  assert(executorDefinition.nodes.filter(node => node.nodeType === 'FunctionDefinition').every(node => node.kind === 'constructor'),
+    'Firsto executor must have no callable runtime entry points.');
+  assert.equal(executor.artifact.storageLayout.storage.length, 0, 'Firsto executor must not retain storage.');
+  assert(executor.artifact.abi.every(item => ['constructor', 'error'].includes(item.type)), 'Unexpected Firsto executor ABI.');
+  const exchangeCalls = [];
+  for (const node of walkAst(executorDefinition)) {
+    if (node.nodeType === 'MemberAccess') {
+      assert(!['call', 'delegatecall', 'callcode', 'send', 'transfer'].includes(node.memberName), 'Unexpected executor raw payment/call.');
+      if (node.memberName === 'fillSignedAsk') exchangeCalls.push(node);
+    }
+    if (node.nodeType === 'Identifier') assert(!['selfdestruct', 'suicide'].includes(node.name), 'Destructive executor operation.');
+    if (node.nodeType === 'YulFunctionCall') assert(!['call', 'delegatecall', 'callcode', 'selfdestruct'].includes(node.functionName.name), 'Unexpected executor assembly call.');
+  }
+  assert.equal(exchangeCalls.length, 1, 'Executor must make exactly one reviewed Firsto fill call.');
+  assert.equal(exchangeCalls[0].expression.arguments?.[0]?.value?.toLowerCase(),
+    '0x33423244f9a5bf81b12b1a018af6f4e079b97f29', 'Executor Firsto target must be fixed.');
   const creationLinks = vaultLinks(vault.artifact.bytecode, 'PoolVault creation bytecode');
   const runtimeLinks = vaultLinks(vault.artifact.deployedBytecode, 'PoolVault runtime bytecode');
   const libraries = expectedLibraries.map(name => {
@@ -167,6 +187,7 @@ export default function auditLinkedLibraries(root, logRoot) {
     vault: { source: vaultSource, selectionSource, artifactPath: vault.path, artifactSha256: vault.artifactSha256,
       runtimeBytecodeTemplate: templateEvidence(vault.artifact.deployedBytecode, 'PoolVault'),
       creationLinks, runtimeLinks }, libraries,
+    firstoExecutor: { source: executorSource, artifactPath: executor.path, constructorOnly: true, fixedExchange: true },
     context: {
       execution: 'Solidity linked-library calls execute by DELEGATECALL in the guarded Vault context.',
       reentrancy: 'Vault owns the nonReentrant purchase/payment entry points. FlexiblePurchase uses bounded static balanceOf callbacks to Vault when recording purchase-time refund credits; no arbitrary call target or calldata is accepted.',

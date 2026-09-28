@@ -5,10 +5,12 @@ export interface InitializationExecutionProof {
   outerTo: string;
   outerDataHash: string;
   plannedDataHash: string;
-  addresses: { timelock: string; beacon: string; factory: string; shareMarket: string };
+  addresses: { timelock: string; beacon: string; factory: string; shareMarket: string;
+    portfolioFactory?: string; portfolioBeacon?: string; portfolioShareMarket?: string };
 }
 export function verifyInitializationExecution(input: {
   record: {
+    kind?: 'integrated-v2';
     account: string;
     input: { governanceMode: string; ownerMultisig: string; operator: string; treasury: string };
     addresses: Record<string, string>;

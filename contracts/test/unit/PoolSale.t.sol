@@ -363,7 +363,7 @@ contract PoolSaleTest is SaleTestBase {
         mining.configure(address(nft), rewardId, 100, 900);
         uint256 calls = mining.claimCalls();
         SaleCallbackBuyer buyer = new SaleCallbackBuyer();
-        buyer.configure(0, abi.encodeCall(ISaleVault.completeSale, ()), true);
+        buyer.configure(0, abi.encodeCall(ISaleVault.completeFirstoSale, (1, SALE_PRICE, 0, 1)), true);
         vm.deal(address(this), SALE_PRICE);
         vm.expectRevert(SaleCallbackBuyer.BuyerRejected.selector);
         buyer.buy{value: SALE_PRICE}(address(pool));
@@ -372,7 +372,7 @@ contract PoolSaleTest is SaleTestBase {
 
     function test_miningClaimCallbackCannotReenterCompletion() public {
         _listSale(SALE_PRICE);
-        mining.setClaimReentry(address(pool), abi.encodeCall(ISaleVault.completeSale, ()));
+        mining.setClaimReentry(address(pool), abi.encodeCall(ISaleVault.completeFirstoSale, (1, SALE_PRICE, 0, 1)));
         uint256 beforeCalls = mining.claimCalls();
         _complete(NFT_BUYER, SALE_PRICE);
         assertTrue(mining.reentryAttempted());

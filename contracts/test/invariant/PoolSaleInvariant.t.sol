@@ -109,9 +109,10 @@ contract PoolSaleHandler is Test {
 
     function complete() public {
         if (phase != IPoolVault.State.Listed || block.timestamp >= deadline) return;
+        uint256 proposalId = sale.listedProposalId();
         vm.deal(actors[4], actors[4].balance + price);
         vm.prank(actors[4]);
-        sale.completeSale{value: price}();
+        sale.completeFirstoSale{value: price}(proposalId, price, 0, 1);
         uint256 fee = price / 100;
         uint256 memberNet = price - fee;
         uint256 perShare = memberNet / 100;

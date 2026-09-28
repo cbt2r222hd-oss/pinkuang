@@ -19,8 +19,9 @@ before(async () => {
   await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
   const port = (listener.address() as { port: number }).port;
   await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
-  node = spawn(fileURLToPath(new URL('../node_modules/.bin/anvil', import.meta.url)),
-    ['--host', '127.0.0.1', '--port', String(port), '--chain-id', '56', '--no-mining', '--base-fee', '0', '--silent'], { stdio: 'ignore' });
+  const anvilPath = process.platform === 'win32' ? '../node_modules/@foundry-rs/anvil-win32-amd64/bin/anvil.exe' : '../node_modules/.bin/anvil';
+  node = spawn(fileURLToPath(new URL(anvilPath, import.meta.url)),
+    ['--host', '127.0.0.1', '--port', String(port), '--chain-id', '56', '--no-mining', '--base-fee', '0', '--silent'], { stdio: 'ignore', windowsHide: true });
   provider = new JsonRpcProvider(`http://127.0.0.1:${port}`, undefined, { cacheTimeout: -1 });
   for (let i = 0; i < 50; i++) {
     try { accounts = (await provider.send('eth_accounts', [])).map(getAddress); break; }

@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { Interface, Wallet, getAddress } from 'ethers';
-import { createJournalService, verifyProductIntent as verifyWithGraph, cancellationIntent, PRODUCT_POOL_ABI as poolAbi, PRODUCT_MARKET_ABI as marketAbi, PRODUCT_FACTORY_ABI as factoryAbi } from './journal-api.mjs';
+import { createJournalService, verifyProductIntent as verifyWithGraph, cancellationIntent, PRODUCT_POOL_ABI as poolAbi, PRODUCT_MARKET_ABI as marketAbi, PRODUCT_FACTORY_ABI as factoryAbi,
+  PRODUCT_PORTFOLIO_ABI as portfolioAbi,PRODUCT_PORTFOLIO_FACTORY_ABI as portfolioFactoryAbi } from './journal-api.mjs';
 import { JournalStore } from './journal-store.mjs';
 import { parseFirstoSignedAsk } from '../src/firsto-purchase.mjs';
 import { signedSource,firstoProvider,collection,now } from '../scripts/fixtures/firsto-order.mjs';
@@ -31,6 +32,7 @@ async function firstoIntentProof(options = {}) {
   return {record,p,order};
 }
 const views = new Interface(['function operator() view returns(address)','function isPool(address) view returns(bool)','function shareMarket() view returns(address)',
+  'function legacyFactory() view returns(address)','function budgetWei() view returns(uint256)',
   'function machineRegistryStatus() view returns(bool initialized,bool ready,uint256 cursor,uint256 cutoff)',
   'function machinePool(address,uint256) view returns(address)',
   'function factory() view returns(address)','function OFFICIAL_FACTORY() view returns(address)',
@@ -48,7 +50,8 @@ function proof(record = intent()) {
     balance:10n**18n,gasPrice:1_000_000_000n,estimate:50000n,operator:account,graphFailed:false,graphChecks:0,
     registry:[true,true,0n,0n],reservedPool:addr(0) };
   const event = (user = account, shares = 2n, amount = 20n, address = pool) => ({ address,transactionHash:hash(77),blockHash:hash(100),
-    ...poolAbi.encodeEventLog(poolAbi.getEvent('Deposited'),[user,shares,amount,20n]) });
+    ...(record.targetType==='portfolio'?portfolioAbi.encodeEventLog(portfolioAbi.getEvent('Deposited'),[user,shares,amount])
+      :poolAbi.encodeEventLog(poolAbi.getEvent('Deposited'),[user,shares,amount,20n])) });
   state.logs = record.action.kind === 'deposit' ? [event()] : [];
   const provider = {
     async send(method, params) {
@@ -60,7 +63,7 @@ function proof(record = intent()) {
       const parsed = views.parseTransaction(tx);
       if (parsed.name==='buyerFeeBps' && state.buyerFeeMissing) return '0x';
       if (parsed.name==='machineRegistryStatus') return state.registry===null?'0x':views.encodeFunctionResult(parsed.name,state.registry);
-      const result = ({ operator:state.operator,isPool:state.registered,shareMarket:market,factory,OFFICIAL_FACTORY:factory,unitPriceWei:10n,salePrice:200n,
+      const result = ({ operator:state.operator,isPool:state.registered,shareMarket:market,factory,OFFICIAL_FACTORY:factory,legacyFactory:addr(10),budgetWei:1000n,unitPriceWei:10n,salePrice:200n,
         machinePool:state.reservedPool,feeBps:state.sellerFeeBps??100n,buyerFeeBps:state.buyerFeeBps??100n,
         orders:[account,pool,100n,state.orderPrice??5n,true] })[parsed.name];
       return views.encodeFunctionResult(parsed.name,[result]);
@@ -82,7 +85,8 @@ async function fixture({record = intent(),allow = [factory]} = {}) {
   const directory = await mkdtemp(join(tmpdir(),'pinkuang-products-')), dbPath = join(directory,'private','journal.sqlite');
   const p = proof(record);
   const service = createJournalService({dbPath,origin,provider:p.provider,currentArtifactDigest:()=>hash(1),allowedProductFactories:allow,
-    productGraphVerifier:async()=>{p.state.graphChecks++;if(p.state.graphFailed)throw Error('graph changed');}});
+    productGraphVerifier:async()=>{p.state.graphChecks++;if(p.state.graphFailed)throw Error('graph changed');
+      return {productKind:record.targetType?.startsWith('portfolio')?'budget':'pool',factory,legacyFactory:addr(10)};}});
   const server = createServer((req,res)=>service.handle(req,res));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const base=`http://127.0.0.1:${server.address().port}`;
@@ -101,12 +105,12 @@ async function fixture({record = intent(),allow = [factory]} = {}) {
 test('all permitted pool and market actions require exact values, registration and a free nonce', async()=>{
   const p=proof(), allow=new Set([factory.toLowerCase()]);
   const calls=[['deposit',[2],'20'],['withdrawDeposit',[],'0'],['finalizeFailure',[],'0'],['harvest',[],'0'],['claim',[],'0'],
-    ['withdrawBnb',[],'0'],['propose',[200,200,1],'0'],['vote',[1,true],'0'],['executeSale',[1],'0'],['cancelExpired',[],'0'],['completeSale',[],'200']];
+    ['withdrawBnb',[],'0'],['propose',[200,200,1],'0'],['vote',[1,true],'0'],['executeSale',[1],'0'],['cancelExpired',[],'0']];
   for(const [name,args,value] of calls)await verifyProductIntent(p.provider,intent(name,args,value),allow);
   for(const [name,args,value] of [['list',[pool,2,5],'0'],['fill',[1,2],'10'],['cancel',[1],'0'],['expire',[1],'0'],['withdrawBnb',[],'0']])
     await verifyProductIntent(p.provider,intent(name,args,value,'market'),allow);
   await assert.rejects(verifyProductIntent(p.provider,intent('deposit',[2],'21'),allow),/Deposit value/);
-  await assert.rejects(verifyProductIntent(p.provider,intent('completeSale',[],'201'),allow),/sale payment/);
+  await assert.rejects(verifyProductIntent(p.provider,intent('completeSale',[],'200'),allow),/Legacy whole miner sale is disabled/);
   await assert.rejects(verifyProductIntent(p.provider,intent('fill',[1,2],'11','market'),allow),/Order price/);
   p.state.registered=false; await assert.rejects(verifyProductIntent(p.provider,intent(),allow),/registered/);
   p.state.registered=true;p.state.nonce=8; await assert.rejects(verifyProductIntent(p.provider,intent(),allow),/nonce/);
@@ -453,5 +457,33 @@ test('finalized Factory creation returns exactly the new pool with an authentica
     assert.equal(done.status,200);assert.equal(done.body.result.status,'confirmed');
     assert.equal(done.body.result.action,'createPool');assert.equal(done.body.result.poolAddress,pool);
     assert.equal((await f.request('market')).body.record,null);
+  } finally {await f.close();}
+});
+
+test('budget deposit uses the same durable one-shot signing lane and requires the parent receipt event',async()=>{
+  const record={...intent(),targetType:'portfolio',data:portfolioAbi.encodeFunctionData('deposit',[2])};
+  const f=await fixture({record});
+  try {
+    assert.equal((await f.request('market','PUT',{record,expectedRevision:0})).status,200);
+    const race=await Promise.all([f.request('market/arm','POST',{expectedRevision:1}),f.request('market/arm','POST',{expectedRevision:1})]);
+    assert.deepEqual(race.map(r=>r.status).sort(),[200,409]);
+    f.state.mined=true;f.state.logs=[];
+    assert.equal((await f.request('market','DELETE',{hash:hash(77),expectedRevision:2})).status,409);
+    f.state.logs=[f.event()];const done=await f.request('market','DELETE',{hash:hash(77),expectedRevision:2});
+    assert.equal(done.status,200);assert.equal(done.body.result.amountWei,'20');assert.equal(done.body.result.shares,'2');
+  } finally {await f.close();}
+});
+
+test('budget creation archives only its own authenticated caps and parent address',async()=>{
+  const record={...intent('createPool',[[addr(4),9,1000,900,addr(0),0,2000,3000]],'0','factory'),targetType:'portfolioFactory',
+    action:{kind:'createPortfolio'},data:portfolioFactoryAbi.encodeFunctionData('createPortfolio',[1000,900,10,2000,3000])};
+  const f=await fixture({record});
+  const event=budget=>({address:factory,transactionHash:hash(77),blockHash:hash(100),
+    ...portfolioFactoryAbi.encodeEventLog(portfolioFactoryAbi.getEvent('PortfolioCreated'),[pool,budget,900,10])});
+  try {
+    assert.equal((await f.request('market','PUT',{record,expectedRevision:0})).status,200);f.state.mined=true;
+    f.state.logs=[event(1001)];assert.equal((await f.request('market','DELETE',{hash:hash(77),expectedRevision:1})).status,409);
+    f.state.logs=[event(1000)];const done=await f.request('market','DELETE',{hash:hash(77),expectedRevision:1});
+    assert.equal(done.status,200);assert.equal(done.body.result.portfolioAddress,pool);
   } finally {await f.close();}
 });

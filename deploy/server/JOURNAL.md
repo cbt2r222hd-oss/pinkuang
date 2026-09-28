@@ -23,7 +23,7 @@ npm start
 | `GET /api/journal/deployment` | `{record,revision,archives,archiveNextCursor,latestCompleted}`；归档只返回最近 100 条，最近一次完成部署独立返回，均仅属于当前登录账户 |
 | `GET /api/journal/deployment/archives?cursor=<rowid>&limit=20` | 本钱包更早的完整部署记录，返回 `{items,nextCursor}`；游标是服务端归档序号，单页上限 100 |
 | `PUT /api/journal/deployment` | `{record,expectedRevision}` → `{revision}`；一个账户只容许一个活跃部署 ID，版本冲突 409。新部署及新步骤签名前，记录摘要与源文件必须与服务器当前构建一致；构建更新后仍可补记原有交易的哈希与回执 |
-| `POST /api/journal/deployment/archive` | `{id,expectedRevision}` → `{revision,archives,archiveNextCursor,latestCompleted}`；`aborted` 须核实终止步骤的同账户、同 nonce 最终链上结果；`complete` 须核实全部 13 笔原交易、回执及记录内声称通过的图校验。两种状态都由固定 BSC RPC 确认 finalized 后，原子归档完整记录并清活跃指针，才能用同钱包新建部署 |
+| `POST /api/journal/deployment/archive` | `{id,expectedRevision}` → `{revision,archives,archiveNextCursor,latestCompleted}`；`aborted` 须核实终止步骤的同账户、同 nonce 最终链上结果；`complete` 须按 kind 核实全部原交易（旧记录 13 笔，integrated-v2 为 16 笔）、回执及记录内声称通过的完整图校验。两种状态都由固定 BSC RPC 确认 finalized 后，原子归档完整记录并清活跃指针，才能用同钱包新建部署 |
 | `POST /api/journal/deployment/import-archive` | `{record}` → `{id}`；仅导入本钱包旧版 `aborted` 记录，同 ID 同内容幂等 |
 | `GET /api/journal/market` | `{record,revision}`，一账户仅一条活跃意图，覆盖同钱包所有市场 nonce |
 | `PUT /api/journal/market` | `{record,expectedRevision}` → `{revision}`；初始意图须在钱包签名请求前落盘，之后只能单调补充交易哈希 |

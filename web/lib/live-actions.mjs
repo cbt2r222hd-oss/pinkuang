@@ -7,7 +7,7 @@ const assert = (value, message) => { if (!value) throw new Error(message); };
 const same = (a, b) => getAddress(a) === getAddress(b);
 const address = value => { const result = getAddress(value); assert(result !== ZeroAddress, '地址不能为零 / Zero address.'); return result; };
 const ACTIONS = new Set(['deposit', 'claim', 'harvest', 'withdrawBnb', 'withdrawDeposit', 'finalizeFailure',
-  'list', 'fill', 'cancel', 'expire', 'marketWithdraw', 'propose', 'vote', 'executeSale', 'cancelExpired', 'completeSale']);
+  'list', 'fill', 'cancel', 'expire', 'marketWithdraw', 'propose', 'vote', 'executeSale', 'cancelExpired', 'completeFirstoSale']);
 const MARKET_ACTIONS = new Set(['list', 'fill', 'cancel', 'expire', 'marketWithdraw']);
 const HASH = /^0x[0-9a-f]{64}$/i;
 
@@ -39,7 +39,7 @@ function id(value) {
  * preview, never a signature or send; the transaction service must simulate latest again before signing.
  */
 export async function prepareProductAction({ provider, config, account, pool, kind, quantity, price, proposalId, support, orderId,
-  priceWei, refPriceWei, refAt, expectedPool, expectedAccount, expectedProposalId, expectedPriceWei,
+  priceWei, refPriceWei, refAt, expectedPool, expectedAccount, expectedProposalId, expectedPriceWei, expectedFeeBps, expectedFeeEpoch,
   expectedSeller, expectedPricePerUnitWei }) {
   assert(ACTIONS.has(kind), '不支持的操作 / Unsupported action.');
   assert(config?.status === 'ready' && [56, 56n, '56', '0x38'].includes(config.chainId ?? config.manifest?.chainId), '尚未配置正式 BSC 部署 / Verified BSC deployment required.');
@@ -186,7 +186,7 @@ export async function prepareProductAction({ provider, config, account, pool, ki
   assert(governance.blockHash.toLowerCase() === block.hash.toLowerCase() && governance.state === row.state,
     '治理区块与矿池快照不一致 / Governance snapshot mismatch.');
   const action = { kind, proposalId, support, priceWei: priceWei ?? (price === undefined ? undefined : exactPrice(price)),
-    refPriceWei, refAt, expectedPool, expectedAccount, expectedProposalId, expectedPriceWei };
+    refPriceWei, refAt, expectedPool, expectedAccount, expectedProposalId, expectedPriceWei, expectedFeeBps, expectedFeeEpoch };
   const prepared = governanceAction(governance, from, action);
   return finish(prepared.transaction, { ...details, governance, quote: prepared.quote });
 }

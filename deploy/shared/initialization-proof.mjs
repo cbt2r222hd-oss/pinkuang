@@ -6,9 +6,12 @@ import { Interface, ZeroAddress, getAddress, getCreateAddress, keccak256 } from 
 export const INITIALIZATION_PROOF_ABI = [
   'function deploy((address ownerMultisig,address operator,address treasury,address vaultImplementation,address factoryImplementation,address marketImplementation) config)',
   'function deploySingleOwner((address ownerMultisig,address operator,address treasury,address vaultImplementation,address factoryImplementation,address marketImplementation) config)',
+  'function deployIntegratedSingleOwner(((address ownerMultisig,address operator,address treasury,address vaultImplementation,address factoryImplementation,address marketImplementation) core,address portfolioFactoryImplementation,address portfolioVaultImplementation) config)',
   'event DeploymentCompleted(address indexed factory,address indexed beacon,address indexed shareMarket,address timelock,address ownerMultisig,address operator,address treasury)',
   'event ImplementationsRecorded(address vault,bytes32 vaultCodehash,address factory,bytes32 factoryCodehash,address market,bytes32 marketCodehash)',
   'event SingleOwnerDeployment(address indexed owner,address indexed factory)',
+  'event IntegratedDeploymentCompleted(address indexed factory,address indexed portfolioFactory,address indexed portfolioBeacon,address portfolioShareMarket,address timelock)',
+  'event PortfolioImplementationsRecorded(address factory,bytes32 factoryCodehash,address vault,bytes32 vaultCodehash)',
 ];
 
 const iface = new Interface(INITIALIZATION_PROOF_ABI);
@@ -36,7 +39,10 @@ const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLow
 export function verifyInitializationExecution({ record, step, tx, receipt }) {
   requireProof(record && step?.id === 'initialize' && tx && receipt, 'missing initialization record.');
   const mode = record.input?.governanceMode;
+  const integrated = record.kind === 'integrated-v2';
+  requireProof(record.kind === undefined || integrated,'unsupported deployment kind.');
   requireProof(mode === 'single' || mode === 'multisig', 'unsupported governance mode.');
+  requireProof(!integrated || mode === 'single','integrated deployment requires single-owner mode.');
   const account = address(record.account);
   const coordinator = address(record.addresses?.AtomicDeployment);
   const config = {
@@ -48,7 +54,11 @@ export function verifyInitializationExecution({ record, step, tx, receipt }) {
     marketImplementation: address(record.addresses.ShareMarket),
   };
   if (mode === 'single') requireProof(same(config.ownerMultisig, account), 'single owner differs from deployment account.');
-  const plannedData = iface.encodeFunctionData(mode === 'single' ? 'deploySingleOwner' : 'deploy', [config]);
+  const portfolioConfig = integrated ? {core:config,
+    portfolioFactoryImplementation:address(record.addresses.BudgetPortfolioFactory),
+    portfolioVaultImplementation:address(record.addresses.BudgetPortfolioVault)} : null;
+  const plannedData = iface.encodeFunctionData(integrated ? 'deployIntegratedSingleOwner' : mode === 'single' ? 'deploySingleOwner' : 'deploy',
+    [portfolioConfig ?? config]);
   const plannedDataHash = keccak256(plannedData);
   requireProof(HASH.test(step.dataHash ?? '') && same(step.dataHash, plannedDataHash), 'recorded initialization calldata differs from the reviewed plan.');
   requireProof(tx.chainId === 56n && tx.value === 0n, 'wrong chain or nonzero outer value.');
@@ -74,6 +84,11 @@ export function verifyInitializationExecution({ record, step, tx, receipt }) {
     factory,
     shareMarket: getCreateAddress({ from: factory, nonce: 2 }),
   };
+  if (integrated) {
+    addresses.portfolioFactory = getCreateAddress({from:coordinator,nonce:5});
+    addresses.portfolioBeacon = getCreateAddress({from:coordinator,nonce:4});
+    addresses.portfolioShareMarket = getCreateAddress({from:addresses.portfolioFactory,nonce:1});
+  }
   const base = { coordinator, outerTo, outerDataHash: keccak256(tx.data), plannedDataHash, addresses };
   if (same(outerTo, coordinator) && same(tx.data, plannedData)) return { kind: 'direct', ...base };
 
@@ -81,7 +96,8 @@ export function verifyInitializationExecution({ record, step, tx, receipt }) {
   requireProof(!same(outerTo, coordinator), 'coordinator calldata differs from the planned initialization.');
   requireProof(Array.isArray(record.steps), 'missing confirmed prerequisite steps.');
   const prerequisites = {};
-  for (const id of ['AtomicDeployment', 'PoolVault', 'PoolFactory', 'ShareMarket']) {
+  for (const id of ['AtomicDeployment', 'PoolVault', 'PoolFactory', 'ShareMarket',
+    ...(integrated ? ['BudgetPortfolioFactory','BudgetPortfolioVault'] : [])]) {
     const matches = record.steps.filter(item => item.id === id);
     requireProof(matches.length === 1 && matches[0].status === 'confirmed'
       && same(matches[0].address, record.addresses[id]) && HASH.test(matches[0].codehash ?? ''),
@@ -101,7 +117,7 @@ export function verifyInitializationExecution({ record, step, tx, receipt }) {
   requireProof(occurrences === 1, 'outer calldata must contain exactly one complete planned initialization.');
   requireProof(Array.isArray(receipt.logs), 'missing initialization events.');
   const logs = receipt.logs.filter(log => same(log.address, coordinator));
-  requireProof(logs.length === 3, 'expected exactly three coordinator initialization events.');
+  requireProof(logs.length === (integrated ? 5 : 3), 'unexpected coordinator initialization event count.');
   const events = [
     ['DeploymentCompleted', [addresses.factory, addresses.beacon, addresses.shareMarket, addresses.timelock,
       config.ownerMultisig, config.operator, config.treasury]],
@@ -110,6 +126,11 @@ export function verifyInitializationExecution({ record, step, tx, receipt }) {
       config.marketImplementation, prerequisites.ShareMarket.codehash]],
     ['SingleOwnerDeployment', [config.ownerMultisig, addresses.factory]],
   ];
+  if (integrated) events.push(
+    ['IntegratedDeploymentCompleted',[addresses.factory,addresses.portfolioFactory,addresses.portfolioBeacon,addresses.portfolioShareMarket,addresses.timelock]],
+    ['PortfolioImplementationsRecorded',[portfolioConfig.portfolioFactoryImplementation,prerequisites.BudgetPortfolioFactory.codehash,
+      portfolioConfig.portfolioVaultImplementation,prerequisites.BudgetPortfolioVault.codehash]],
+  );
   let lastIndex = -1;
   for (let index = 0; index < events.length; index++) {
     const log = logs[index];

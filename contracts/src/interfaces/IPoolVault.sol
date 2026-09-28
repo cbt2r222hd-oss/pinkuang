@@ -123,6 +123,14 @@ interface IPoolVault {
     event Voted(uint256 indexed proposalId, address indexed voter, bool support, uint256 weight);
     event SaleListed(uint256 indexed proposalId, uint256 listingId, uint256 price, uint64 expiresAt);
     event SaleCompleted(uint256 gross, uint256 toPlatform, uint256 burnedBem, uint256 toMembers);
+    event FirstoSaleCompleted(
+        uint256 indexed proposalId,
+        bytes32 indexed orderHash,
+        address indexed buyer,
+        uint256 gross,
+        uint256 takerFee,
+        uint256 feeEpoch
+    );
     event SaleExpired(uint256 indexed proposalId);
     event SaleBudgetRecorded(uint256 indexed proposalId, uint256 amount);
     event SaleProceedsSettled(address indexed user, uint256 shares, uint256 amount);
@@ -178,6 +186,12 @@ interface IPoolVault {
     function relist(uint256 proposalId) external;
     function cancelExpired() external;
     function completeSale() external payable;
+    function completeFirstoSale(
+        uint256 expectedProposalId,
+        uint256 expectedSalePrice,
+        uint16 expectedFeeBps,
+        uint256 expectedFeeEpoch
+    ) external payable;
     function settleSale() external;
     function executeBurn(uint256 minOut, uint256 maxIn) external returns (uint256 spent, uint256 burned);
     function asset() external view returns (address);

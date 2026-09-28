@@ -28,14 +28,19 @@ import {
   SlidersHorizontal,
   Download,
   ExternalLink,
+  Bell,
 } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import BrandMark from "./BrandMark";
 import MoreServicesNotice from "./MoreServicesNotice";
+import Notifications from "./Notifications";
 import SiteOverview from "./SiteOverview";
 import LiveYieldChart from "./LiveYieldChart";
 import LiveGovernance from "./LiveGovernance";
 import LiveOperator from "./LiveOperator";
+import FirstoMarketBoard from "./FirstoMarketBoard";
+import LivePortfolios from "./LivePortfolios";
+import { preparePortfolioAction } from "../lib/live-portfolios.mjs";
 import WalletConnectModal, { WalletIcon } from "./WalletConnectModal";
 import { createWalletDiscovery, walletConnectionError } from "../lib/wallet-discovery.mjs";
 import { sameUnsignedIntent } from "../lib/ui-context.mjs";
@@ -43,7 +48,8 @@ import { READ_CANCELLED, retryReadRound, settleReadRound } from "../lib/read-ret
 import { prepareAdminAction, readOperatorStatus, sameAdminPurchasePreview } from "../lib/live-admin.mjs";
 import ProjectShare from "./ProjectShare";
 import { resolveDeployConsoleUrl } from "../lib/deploy-console-url.mjs";
-import { loadLiveConfig } from "../lib/live-config.mjs";
+import { createReadOnlyHttpProvider, loadLiveConfig } from "../lib/live-config.mjs";
+import { readShareDailyCapacityPrice, shareDailyCapacityPriceWei } from "../lib/share-daily-capacity.mjs";
 import { createLiveDataClient } from "../lib/live-data.mjs";
 import {
   connectWallet,
@@ -118,7 +124,7 @@ const actionNames = {
   propose: ["发起出售提案", "Propose miner sale"],
   vote: ["提交表决", "Submit vote"],
   executeSale: ["执行整机挂牌", "Execute listing"],
-  completeSale: ["购买整台矿机", "Buy whole miner"],
+  completeFirstoSale: ["购买整台矿机", "Buy whole miner"],
   cancelExpired: ["解除到期挂牌", "Clear expired listing"],
 };
 const textError = (error) =>
@@ -210,8 +216,12 @@ export default function LivePlatform() {
   const [yieldData, setYieldData] = useState(null),
     [yieldDays, setYieldDays] = useState(30);
   const [loadedRoute, setLoadedRoute] = useState("");
+  const [orderCapacity, setOrderCapacity] = useState({});
+  const [capacityNow, setCapacityNow] = useState(0);
+  const [loadedAccount, setLoadedAccount] = useState(null);
   const [operator, setOperator] = useState(null);
   const [positionsLoaded, setPositionsLoaded] = useState(false);
+  const [notificationClaim, setNotificationClaim] = useState(null);
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false),
     [transactionStage, setTransactionStage] = useState(null),
@@ -231,6 +241,7 @@ export default function LivePlatform() {
     [detailTab, setDetailTab] = useState("asset"),
     [marketTab, setMarketTab] = useState("shares");
   const epoch = useRef(0),
+    capacityEpoch = useRef(0),
     modalRef = useRef(null),
     restoreFocus = useRef(null),
     connectedWallet = useRef(null),
@@ -256,8 +267,11 @@ export default function LivePlatform() {
   const isOperator = operatorContextCurrent && operator.status === 'verified'
     && operator.configured === true && operator.isOperator === true && same(operator.operator, account)
     && !connectingId && !connectionLock.current;
+  const isPortfolioOperator = operatorContextCurrent && operator.status === 'verified' && operator.isPortfolioOperator === true
+    && same(operator.portfolioOperator, account) && !connectingId && !connectionLock.current;
+  const hasOperatorAccess = isOperator || isPortfolioOperator;
   const operatorAccess = !wallet || !account ? 'disconnected' : !config ? 'unavailable'
-    : isOperator ? 'verified' : !operatorContextCurrent || operator.status === 'checking' || connectingId ? 'checking'
+    : hasOperatorAccess ? 'verified' : !operatorContextCurrent || operator.status === 'checking' || connectingId ? 'checking'
       : operator.status === 'error' ? 'unavailable' : 'denied';
 
   useEffect(() => {
@@ -436,15 +450,31 @@ export default function LivePlatform() {
           { timeZone: "Asia/Shanghai", hour12: false },
         );
   const actionLabel = (kind) => L(...(actionNames[kind] || [kind, kind]));
+  const capacityCell = (order) => {
+    const capacity = orderCapacity[order.pool?.toLowerCase()];
+    if (capacity?.available && capacity.validUntil > capacityNow) return <>
+      <strong>{amount(shareDailyCapacityPriceWei(order.pricePerUnitWei, capacity.estimated24hAtomic), 18, 6)}</strong>
+      <small>Firsto · {new Date(capacity.observedAt).toLocaleString(locale === "en" ? "en-GB" : "zh-CN")}</small>
+    </>;
+    if (capacity?.loading) return L("计算中…", "Loading…");
+    return <button className="text-button" onClick={() => void readAdditionalOrderCapacity(order)} disabled={!config || loading}>
+      {capacity?.available ? L("报价已过期 · 刷新", "Quote expired · refresh") : capacity ? L("暂不可用 · 重试", "Unavailable · retry") : L("查询日产能价", "Check capacity price")}
+    </button>;
+  };
   const accountNeeded = ["overview", "rewards"].includes(route.route);
 
   useEffect(() => {
     if (!client) return;
+    if (route.route === 'notifications') {
+      setLoadedRoute('notifications'); setLoading(false); setError('');
+      return;
+    }
     let cancelled = false;
     const revision = ++epoch.current;
     const current = () => !cancelled && revision === epoch.current;
     const clearRound = () => {
       setLoadedRoute("");
+      setLoadedAccount(null);
       setPositionsLoaded(false);
       setPools([]);
       setPositions([]);
@@ -491,6 +521,7 @@ export default function LivePlatform() {
           setActivity(result.activity.items);
           setActivityCursor(result.activity.nextCursor);
         }
+        setLoadedAccount(account);
       })
       .catch((e) => {
         if (current()) {
@@ -510,6 +541,50 @@ export default function LivePlatform() {
       epoch.current++;
     };
   }, [client, account, route.route, route.pool, refresh, marketTab]);
+
+  useEffect(() => {
+    if (route.route !== "market") return;
+    setCapacityNow(Date.now());
+    const timer = setInterval(() => setCapacityNow(Date.now()), 15_000);
+    return () => clearInterval(timer);
+  }, [route.route]);
+
+  useEffect(() => {
+    const revision = ++capacityEpoch.current;
+    setOrderCapacity({});
+    if (!client || route.route !== "market" || marketTab === "whole" || !orders.length || !config) return;
+    const provider = createReadOnlyHttpProvider(config);
+    const firstByPool = new Map();
+    for (const order of orders) {
+      const key = order.pool?.toLowerCase();
+      if (key && !firstByPool.has(key)) firstByPool.set(key, order);
+    }
+    // Limit automatic lookups against the shared Firsto quota. Others are explicit.
+    void Promise.all([...firstByPool].slice(0, 2).map(async ([key, order]) => {
+      setOrderCapacity(previous => ({ ...previous, [key]: { loading: true } }));
+      const result = await readShareDailyCapacityPrice(provider, {
+        factory: config.factory, pool: order.pool, pricePerUnitWei: order.pricePerUnitWei,
+      });
+      if (capacityEpoch.current !== revision) return;
+      setCapacityNow(Date.now());
+      setOrderCapacity(previous => ({ ...previous, [key]: result }));
+    }));
+    return () => { capacityEpoch.current++; };
+  }, [client, route.route, marketTab, orders, boot]);
+
+  async function readAdditionalOrderCapacity(order) {
+    if (!config || !client || !order?.pool) return;
+    const key = order.pool.toLowerCase();
+    if (orderCapacity[key]?.loading) return;
+    const revision = capacityEpoch.current;
+    setOrderCapacity(previous => ({ ...previous, [key]: { loading: true } }));
+    const result = await readShareDailyCapacityPrice(createReadOnlyHttpProvider(config), {
+      factory: config.factory, pool: order.pool, pricePerUnitWei: order.pricePerUnitWei,
+    });
+    if (capacityEpoch.current !== revision) return;
+    setCapacityNow(Date.now());
+    setOrderCapacity(previous => ({ ...previous, [key]: result }));
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -645,9 +720,11 @@ export default function LivePlatform() {
         activeModal.current === target
       )
         setPrepared({ ...result, forModal: target, input,
-          previewBindings: target.kind === 'completeSale' ? {
+          previewBindings: target.kind === 'completeFirstoSale' ? {
             expectedPriceWei: result.quote.priceWei.toString(),
             expectedProposalId: result.quote.proposalId.toString(),
+            expectedFeeBps: result.quote.feeBps.toString(),
+            expectedFeeEpoch: result.quote.feeEpoch.toString(),
           } : target.kind === 'fill' ? {
             expectedSeller: result.order.seller,
             expectedPricePerUnitWei: result.order.pricePerUnitWei.toString(),
@@ -695,6 +772,8 @@ export default function LivePlatform() {
     setPrepared(null);
     setModal(null);
     setRefresh((v) => v + 1);
+    if (result.status === "confirmed" && result.finalized === true && result.action === "claim")
+      setNotificationClaim(result);
     setMessage(
       result.status === "confirmed"
         ? L("交易已在链上确认。", "Transaction confirmed on chain.")
@@ -703,7 +782,8 @@ export default function LivePlatform() {
             "The original action did not complete. Its final outcome has been checked.",
           ),
     );
-    const deposit = result.action === "deposit" ? result : null;
+    const deposit = result.action === "deposit" && result.targetType !== 'portfolio'
+      && !same(result.factory, config.portfolioFactory) ? result : null;
     if (
       result.status === "confirmed" &&
       deposit?.finalized &&
@@ -738,6 +818,25 @@ export default function LivePlatform() {
             ),
           );
       }
+    }
+  }
+  async function sendPortfolio(confirmed, input) {
+    if (busy || submissionLock.current || !wallet || !account) throw new Error('请等待当前操作完成。');
+    const ticket = {}, revision = walletEpoch.current, page = routeIdentity.current;
+    submissionLock.current = ticket; setBusy(true); setError('');
+    const current = () => revision === walletEpoch.current && page === routeIdentity.current;
+    try {
+      await connectJournal({ inspect: false, onState: showTransactionProgress });
+      if (!current()) throw new Error('页面或钱包已改变，请重新预览。');
+      const checked = await preparePortfolioAction({ ...input, config, provider: wallet, account });
+      if (!current() || !sameUnsignedIntent(confirmed.transaction, checked.transaction)) throw new Error('交易内容已改变，请重新预览。');
+      const result = await sendProductTransaction({ provider: wallet, config, transaction: checked.transaction,
+        action: checked.action, onState: state => { if (current()) showTransactionProgress(state); } });
+      if (revision === walletEpoch.current) await handleResult(result, revision);
+      return result;
+    } finally {
+      if (submissionLock.current === ticket) submissionLock.current = null;
+      setBusy(false); setTransactionStage(null);
     }
   }
   async function submit() {
@@ -1082,7 +1181,7 @@ export default function LivePlatform() {
         >
           {!loading && source && !holdings && pools.length === 0 && <>
             {L("运营方创建项目后，将在这里开放认购。", "Subscriptions will appear here once the operator creates a pool.")}
-            {isOperator && <Button secondary disabled={busy} onClick={() => go('operator')}>{L('创建首个项目', 'Create the first pool')}</Button>}
+            {hasOperatorAccess && <Button secondary disabled={busy} onClick={() => go('operator')}>{L('创建首个项目', 'Create the first pool')}</Button>}
           </>}
         </Empty>
       )}
@@ -1173,14 +1272,14 @@ export default function LivePlatform() {
           {navigation.map(([id, zh, en, Icon]) => (
             <button
               key={id}
-              className={`nav-item ${route.route === id || (id === "pools" && route.route === "detail") ? "active" : ""}`}
+              className={`nav-item ${route.route === id || (id === "pools" && ["detail", "portfolio"].includes(route.route)) ? "active" : ""}`}
               onClick={() => go(id)}
             >
               <Icon size={19} />
               {L(zh, en)}
             </button>
           ))}
-          {isOperator && <button className={`nav-item ${route.route === 'operator' ? 'active' : ''}`} onClick={() => go('operator')}><ShieldCheck size={19}/>{L('运营工作台', 'Pool operations')}</button>}
+          {hasOperatorAccess && <button className={`nav-item ${route.route === 'operator' ? 'active' : ''}`} onClick={() => go('operator')}><ShieldCheck size={19}/>{L('运营工作台', 'Pool operations')}</button>}
         </nav>
         <div className="nav-divider" />
         <div className="nav-caption">{L("更多服务", "MORE SERVICES")}</div>
@@ -1194,7 +1293,7 @@ export default function LivePlatform() {
             {L("平台规则", "Platform rules")}
             <ArrowUpRight size={14} />
           </button>
-          {isOperator && deploymentConsoleUrl && (
+          {hasOperatorAccess && deploymentConsoleUrl && (
             <a
               className="rules-link deployment-console-link"
               href={deploymentConsoleUrl}
@@ -1239,7 +1338,7 @@ export default function LivePlatform() {
             <span>{L("工作台", "Workspace")}</span>
             <ChevronRight size={13} />
             <strong>
-              {route.route === "detail"
+              {route.route === "portfolio" ? L("预算项目详情", "Budget project") : route.route === "notifications" ? L("通知中心", "Notifications") : route.route === "detail"
                 ? L("矿机详情", "Miner details")
                 : L(
                     ...(navigation
@@ -1249,6 +1348,7 @@ export default function LivePlatform() {
             </strong>
           </div>
           <div className="top-actions">
+            <button className="appearance-toggle" aria-label={L("通知中心", "Notifications")} title={L("通知中心", "Notifications")} disabled={busy} onClick={() => go("notifications")}><Bell size={17}/></button>
             <button
               className="appearance-toggle"
               aria-label={L("切换外观", "Change appearance")}
@@ -1275,14 +1375,19 @@ export default function LivePlatform() {
               }
             >
               {account && walletInfo ? <WalletIcon wallet={walletInfo} size={19} /> : <Wallet size={17} />}
-              {account
+              <span className="live-wallet-label">{account
                 ? shortAddress(account)
-                : L("连接钱包", "Connect wallet")}
+                : L("连接钱包", "Connect wallet")}</span>
               <ChevronDown size={14} />
             </Button>
           </div>
         </header>
         <main aria-busy={loading} data-ready-route={loadedRoute}>
+          <Notifications key={`${config?.factory || ''}:${account || ''}:${walletRevision}`}
+            account={account} wallet={wallet} config={config} locale={locale} route={route.route}
+            positions={same(loadedAccount, account) ? positions : []} detail={same(loadedAccount, account) ? detail : null} claim={notificationClaim}
+            blocked={busy || !!modal || loading} onConnect={connect} onOpen={() => go('notifications')}
+            isCurrent={() => connectedWallet.current === wallet && walletEpoch.current === walletRevision}/>
           {boot.status !== "ready" && (
             <div className="live-service-note" role="status">
               <ShieldCheck size={20} />
@@ -1911,9 +2016,9 @@ export default function LivePlatform() {
                           disabled={loading ||
                             busy || !account || governance?.salePrice == null
                           }
-                          onClick={() => openAction("completeSale", detail)}
+                          onClick={() => openAction("completeFirstoSale", detail)}
                         >
-                          {L("购买整台矿机", "Buy this miner")}
+                          {L("预览 Firsto 整机成交", "Preview Firsto purchase")}
                         </Button>
                       </>
                     ) : (
@@ -2103,8 +2208,8 @@ export default function LivePlatform() {
               {heading(
                 L("矿机转让", "Marketplace"),
                 L(
-                  "按链上有效订单买卖份额，也可购买挂牌整机。",
-                  "Trade valid share orders or purchase a listed miner.",
+                  "按链上有效订单买卖份额；下方 Firsto 行情为只读报价。",
+                  "Trade verified on-chain shares; Firsto miner quotes below are read-only.",
                 ),
                 refreshButton,
               )}
@@ -2146,6 +2251,7 @@ export default function LivePlatform() {
                           <th>{L("项目", "Pool")}</th>
                           <th>{L("剩余份额", "Remaining")}</th>
                           <th>{L("每份挂牌价", "Listed price")}</th>
+                          <th>{L("日产能价", "Daily capacity price")}<small>BNB / (BEM / {L("天", "day")})</small></th>
                           <th>{L("卖家", "Seller")}</th>
                           <th>{L("到期", "Expires")}</th>
                           <th />
@@ -2164,6 +2270,7 @@ export default function LivePlatform() {
                             </td>
                             <td>{o.remaining?.toString() ?? "—"}</td>
                             <td>{amount(o.pricePerUnitWei)} BNB</td>
+                            <td>{capacityCell(o)}</td>
                             <td>{shortAddress(o.seller)}</td>
                             <td>
                               {date(o.expiresAt)}
@@ -2232,6 +2339,7 @@ export default function LivePlatform() {
                     )}
                   </div>
                   {moreButton(orderCursor, "orders")}
+                  {!!orders.length && <p className="subtle-note">{L("日产能价按该挂单每份价格 × 100 ÷ 当前矿机预计日产出计算，属于毛产能估算；实际收益另按合约费率结算。产能来源过期或未核验时不显示价格，不影响链上买卖。", "Capacity price is each share order's price × 100 ÷ estimated daily miner output. This gross estimate is not a return guarantee; unavailable estimates do not affect on-chain trading.")}</p>}
                 </section>
               )}
               <section className="panel live-section">
@@ -2259,6 +2367,12 @@ export default function LivePlatform() {
               </section>
             </>
           )}
+          {route.route === "market" && <FirstoMarketBoard />}
+          {['pools','overview','rewards','governance','market','portfolio'].includes(route.route) && <LivePortfolios
+            config={config} provider={client?.provider} client={client} locale={locale} account={account} wallet={wallet} mode={route.route} initialPool={route.route === 'portfolio' ? route.pool : null}
+            disabled={loading || busy || !!pending} onConnect={connect} onSend={sendPortfolio}
+            onBuyChild={pool => openAction('completeFirstoSale', { pool })} refreshKey={refresh}/>}
+
           {route.route === "governance" && (
             <>
               {heading(
@@ -2313,11 +2427,14 @@ export default function LivePlatform() {
               )}
             </>
           )}
-          {route.route === 'operator' && (isOperator ? <>
+          {route.route === 'operator' && (hasOperatorAccess ? <>
             {heading(L('运营工作台', 'Pool operations'), L('创建矿池、购机与管理矿机。', 'Create pools, purchase and manage miners.'))}
-            <LiveOperator key={`${config?.factory}:${account}:${walletRevision}:${refresh}`} config={config} wallet={wallet} account={account}
+            {isOperator && <LiveOperator key={`${config?.factory}:${account}:${walletRevision}:${refresh}`} config={config} wallet={wallet} account={account}
               operator={operator} disabled={loading || busy || !!pending} onSend={sendAdminAction}
-              onRefresh={() => setRefresh(value => value + 1)}/>
+              onRefresh={() => setRefresh(value => value + 1)}/>}
+            <LivePortfolios config={config} provider={client?.provider} account={account} wallet={wallet} mode="operator"
+              disabled={loading || busy || !!pending} onConnect={connect} onSend={sendPortfolio}
+              onBuyChild={pool => openAction('completeFirstoSale', { pool })} refreshKey={refresh}/>
           </> : <section className="panel" data-operator-access={operatorAccess}>
             <Empty title={operatorAccess === 'checking'
               ? L('正在核对访问权限', 'Checking access')
@@ -2373,14 +2490,14 @@ export default function LivePlatform() {
                 "Public rules · Clear ownership · Verifiable records",
               )}
             </span>
-            <span>
+            {route.route !== 'notifications' && <span>
               {source
                 ? L("数据区块", "Data block") +
                   ` ${source.indexedBlock ?? source.indexedThrough ?? source.blockNumber ?? "—"}`
                 : boot.status === 'loading' || loading
                   ? L("正在核对链上数据", "Checking on-chain data")
                   : L("数据暂不可用", "Data temporarily unavailable")}
-            </span>
+            </span>}
           </footer>
         </main>
       </div>
@@ -2609,6 +2726,13 @@ export default function LivePlatform() {
                               <div><span>{L('买方 1% 手续费', 'Buyer fee · 1%')}</span><strong>{amount(prepared.marketTrade.buyerFeeWei, 18, 18)} BNB</strong></div>
                               <div><span>{L('卖方 1% 手续费', 'Seller fee · 1%')}</span><strong>{amount(prepared.marketTrade.sellerFeeWei, 18, 18)} BNB</strong></div>
                               <div><span>{L('卖方实收', 'Seller proceeds')}</span><strong>{amount(prepared.marketTrade.sellerNetWei, 18, 18)} BNB</strong></div>
+                            </>}
+                            {modal.kind === 'completeFirstoSale' && prepared.quote && <>
+                              <div><span>{L('整机挂牌价', 'Approved miner price')}</span><strong>{amount(prepared.quote.priceWei, 18, 18)} BNB</strong></div>
+                              <div><span>{L('Firsto 买方手续费', 'Firsto buyer fee')}</span><strong>{amount(prepared.quote.sourceFeeWei, 18, 18)} BNB</strong></div>
+                              <div><span>{L('平台费（挂牌价的 1%）', 'Platform fee (1% of sale price)')}</span><strong>{amount(prepared.quote.feeWei, 18, 18)} BNB</strong></div>
+                              <div><span>{L('持有人可分配卖款', 'Holder sale proceeds')}</span><strong>{amount(prepared.quote.holderNetWei, 18, 18)} BNB</strong></div>
+                              <p>{L('同笔完成收益结清与 Firsto 成交；暂不向 Firsto 外部页面发布挂单。', 'Rewards settle in the same Firsto trade. External Firsto website listings are not enabled.')}</p>
                             </>}
                             <div>
                               <span>{L("支付金额", "Payment")}</span>

@@ -89,7 +89,7 @@ test('read-only preflight permits unchecked review, but signing requires review'
   const unchecked = { ...input, governanceReviewed: false, protocolReviewed: false };
   const count = sends;
   const report = await preflight(wallet, bundle, unchecked);
-  assert.equal(report.transactionCount, LIBRARY_NAMES.length + 5);
+  assert.equal(report.transactionCount, LIBRARY_NAMES.length + 7);
   assert.equal(report.account, account);
   assert.equal(sends, count);
   await assert.rejects(engine().start(unchecked), /核对治理/);
@@ -435,13 +435,13 @@ test('complete single-wallet graph deploys, records receipts/runtime, and recove
   } });
   const complete = await countedEngine.resume(adjusted);
   assert.equal(complete.status, 'complete');
-  assert.equal(complete.steps.length, LIBRARY_NAMES.length + 5);
+  assert.equal(complete.steps.length, LIBRARY_NAMES.length + 7);
   assert.ok(complete.steps.every(step => step.status === 'confirmed' && step.receipt?.status === 1));
   assert.ok(complete.verification!.checks.every(check => check.passed));
   assert.equal(complete.verification!.checks.find(check => check.label === '升级最小延迟')?.actual, '172800');
   assert.ok(BigInt(complete.spentWei) > 0n);
-  assert.equal(Object.keys(complete.verification!.code).length, LIBRARY_NAMES.length + 9);
-  assert.equal(graphCodeReads.size, Object.keys(complete.addresses).length);
+  assert.equal(Object.keys(complete.verification!.code).length, LIBRARY_NAMES.length + 16);
+  assert.equal(graphCodeReads.size, new Set(Object.values(complete.addresses).map(address => address.toLowerCase())).size);
   assert([...graphCodeReads.values()].every(count => count === 1), 'graph audit reads each runtime only once');
   assert(maxConcurrentCodeReads > 1, 'independent code reads should run concurrently');
   assert.equal(complete.verification!.checks.find(check => check.label === 'Lens.factory')?.actual.toLowerCase(), complete.addresses.factory.toLowerCase());
@@ -483,10 +483,17 @@ test('complete single-wallet graph deploys, records receipts/runtime, and recove
   const publicManifest = deploymentManifest(complete, bundle);
   assert.equal(publicManifest.factory, complete.addresses.factory);
   assert.equal(publicManifest.lens, complete.addresses.lens);
+  assert.equal(publicManifest.kind, 'integrated-v2');
+  assert.equal(publicManifest.portfolioFactory, complete.addresses.portfolioFactory);
+  assert.equal(publicManifest.portfolioMarket, complete.addresses.portfolioShareMarket);
+  assert.ok(publicManifest.codehash.portfolioImplementation);
+  const missingPortfolio = structuredClone(complete);
+  delete missingPortfolio.addresses.portfolioFactory;
+  assert.throws(() => deploymentManifest(missingPortfolio, bundle));
   assert.equal(publicManifest.deployment.txHash, complete.steps.at(-1)!.txHash);
   const initialize = complete.steps.at(-1)!;
   const tx = await rpc('eth_getTransactionByHash', [initialize.txHash]) as { input: string; value: string };
-  assert.equal(tx.input.slice(0, 10), new Interface(bundle.artifacts.AtomicDeployment.abi).getFunction('deploySingleOwner')!.selector);
+  assert.equal(tx.input.slice(0, 10), new Interface(bundle.artifacts.AtomicDeployment.abi).getFunction('deployIntegratedSingleOwner')!.selector);
   assert.equal(BigInt(tx.value), 0n);
   // Emulate the wallet envelope's RPC representation around a real, independently
   // verified Anvil deployment. This exercises recovery, not the wallet relay EVM.

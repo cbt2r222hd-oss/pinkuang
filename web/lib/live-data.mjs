@@ -189,6 +189,10 @@ export function createLiveDataClient(config, { provider, fetcher = globalThis.fe
     insist(data?.scope === 'confirmed_indexed_history', 'invalid_data', '平台统计口径无效。');
     const values = { scope: data.scope, estimatedDailyBemAtomic: null, currentlyActivePoolCount: null };
     for (const field of ['registeredPoolCount', 'everParticipantAddressCount', 'purchasedCostWei', 'shareMarketFilledGrossWei', 'harvestedToMembersBemAtomic']) values[field] = exact(data[field], field);
+    for (const field of ['topLevelProjectCount', 'standalonePoolCount', 'portfolioCount', 'childPoolCount'])
+      if (data[field] !== undefined) values[field] = exact(data[field], field);
+    if (values.topLevelProjectCount !== undefined) insist(values.topLevelProjectCount === values.standalonePoolCount + values.portfolioCount
+      && values.registeredPoolCount === values.standalonePoolCount + values.childPoolCount, 'index_coverage', '父子项目统计不一致。');
     const count = (await call(manifest.factory, abi.PoolFactory, 'poolCount', [], BigInt(source.indexedThrough)))[0];
     insist(count === values.registeredPoolCount, 'index_coverage', '项目统计与同块工厂登记数不一致。');
     await ensureCanonical(source);

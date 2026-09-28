@@ -8,6 +8,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IPoolVault} from "./interfaces/IPoolVault.sol";
 import {ITapeoutMining} from "./interfaces/ITapeoutMining.sol";
 import {TransferableBemRewards} from "./libraries/TransferableBemRewards.sol";
+import {BudgetGovernanceState} from "./BudgetGovernanceState.sol";
 
 interface IBudgetLegacyFactory {
     function isPool(address pool) external view returns (bool);
@@ -22,6 +23,7 @@ interface IBudgetChild is IPoolVault, IERC20 {
     function activatedAt() external view returns (uint64);
     function claimable(address member) external view returns (uint256);
     function expiresAt() external view returns (uint64);
+    function bnbOwed(address member) external view returns (uint256);
 }
 
 interface IBudgetPortfolioFactoryRoles {
@@ -33,7 +35,7 @@ interface IBudgetPortfolioFactoryRoles {
 /// @dev Every child keeps its NFT and existing source/sale protections. This project
 /// holds all child shares; unclaimed BEM follows project shares when they move.
 /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
-contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
+contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable, BudgetGovernanceState {
     using SafeERC20 for IERC20;
     using TransferableBemRewards for TransferableBemRewards.Ledger;
 
@@ -91,6 +93,7 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
     error InvalidProposal();
     error AlreadyVoted();
     error ProposalNotPassed();
+    error ProposeCooldown();
     error InsufficientUnlockedShares();
 
     event Deposited(address indexed member, uint8 shares, uint256 amount);
@@ -278,7 +281,7 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         childInfo[address(pool)] = Child(params.circuits, params.circuitId, cost, official, false);
         children.push(address(pool));
         activeChildCount += 1;
-        pool.withdrawBnb();
+        if (pool.bnbOwed(address(this)) != 0) pool.withdrawBnb();
         if (address(this).balance < totalBnbOwed + budgetWei - spentWei) revert AccountingDeficit();
         emit ChildPurchased(address(pool), params.circuits, params.circuitId, cost, official);
     }
@@ -378,12 +381,15 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         returns (uint256 proposalId)
     {
         if (state != IPoolVault.State.Active) revert WrongState();
-        if (activeProposalId != 0) revert ProposalActive();
+        if (_saleFrozen()) revert ProposalActive();
+        if (block.timestamp < nextRoundAt()) revert ProposeCooldown();
         if (
             balanceOf(msg.sender) == 0 || childInfo[child].collection == address(0) || childInfo[child].sold
                 || price == 0 || IBudgetChild(child).state() != IPoolVault.State.Active
                 || block.timestamp < uint256(IBudgetChild(child).activatedAt()) + 7 days
         ) revert InvalidProposal();
+        if (activeProposalId != 0) emit ChildSaleExpired(activeProposalId);
+        _budgetGovernanceStorage().nextRoundAt = uint64(block.timestamp + 7 days);
         proposalId = nextProposalId++;
         proposals[proposalId] = SaleProposal(
             child, price, referencePrice, referenceAt, uint64(block.timestamp + 1 days), memberCount, 0, 0, false
@@ -473,12 +479,28 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
     }
 
     function shareTradingAllowed() external view returns (bool) {
-        return state == IPoolVault.State.Active && activeProposalId == 0;
+        return state == IPoolVault.State.Active && !_saleFrozen();
+    }
+
+    /// @notice New single-candidate rounds are globally separated by seven days.
+    function nextRoundAt() public view returns (uint64) {
+        uint64 next = _budgetGovernanceStorage().nextRoundAt;
+        // Preserve cooldown if an existing portfolio is upgraded with an old round.
+        if (next == 0 && nextProposalId > 1) {
+            return uint64(uint256(proposals[nextProposalId - 1].endsAt) + 6 days);
+        }
+        return next;
+    }
+
+    function _saleFrozen() private view returns (bool) {
+        if (activeProposalId == 0) return false;
+        SaleProposal storage p = proposals[activeProposalId];
+        return p.executed || block.timestamp < p.endsAt;
     }
 
     function lock(address member, uint256 amount) external nonReentrant {
         _onlyShareMarket();
-        if (state != IPoolVault.State.Active || activeProposalId != 0) revert WrongState();
+        if (state != IPoolVault.State.Active || _saleFrozen()) revert WrongState();
         if (amount == 0 || amount > balanceOf(member) - lockedShares[member]) revert InsufficientUnlockedShares();
         lockedShares[member] += amount;
     }
@@ -513,7 +535,7 @@ contract BudgetPortfolioVault is ERC20Upgradeable, ReentrancyGuardUpgradeable {
         uint256 fromBefore = from == address(0) ? 0 : balanceOf(from);
         uint256 toBefore = to == address(0) ? 0 : balanceOf(to);
         if (from != address(0) && to != address(0)) {
-            if (state != IPoolVault.State.Active || activeProposalId != 0) revert WrongState();
+            if (state != IPoolVault.State.Active || _saleFrozen()) revert WrongState();
             address market = IBudgetPortfolioFactoryRoles(OFFICIAL_FACTORY).shareMarket();
             if (market == address(0) || to == market) revert WrongState();
             if (value == 0 || value > fromBefore - lockedShares[from]) revert InsufficientUnlockedShares();

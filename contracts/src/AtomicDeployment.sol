@@ -7,6 +7,7 @@ import {PoolBeacon} from "./PoolBeacon.sol";
 import {PoolFactory} from "./PoolFactory.sol";
 import {IShareMarket} from "./interfaces/IShareMarket.sol";
 import {PoolLens} from "./PoolLens.sol";
+import {BudgetPortfolioFactory} from "./BudgetPortfolioFactory.sol";
 
 interface IFactoryBoundVault {
     function OFFICIAL_FACTORY() external view returns (address);
@@ -38,9 +39,22 @@ contract AtomicDeployment {
         address shareMarket;
     }
 
+    struct IntegratedConfig {
+        Config core;
+        address portfolioFactoryImplementation;
+        address portfolioVaultImplementation;
+    }
+
+    struct PortfolioDeployment {
+        address factory;
+        address beacon;
+        address shareMarket;
+    }
+
     address public immutable deployer;
     bool public deployed;
     Deployment public deployment;
+    PortfolioDeployment public portfolioDeployment;
 
     error Unauthorized();
     error AlreadyDeployed();
@@ -67,6 +81,16 @@ contract AtomicDeployment {
         bytes32 marketCodehash
     );
     event SingleOwnerDeployment(address indexed owner, address indexed factory);
+    event IntegratedDeploymentCompleted(
+        address indexed factory,
+        address indexed portfolioFactory,
+        address indexed portfolioBeacon,
+        address portfolioShareMarket,
+        address timelock
+    );
+    event PortfolioImplementationsRecorded(
+        address factory, bytes32 factoryCodehash, address vault, bytes32 vaultCodehash
+    );
 
     constructor() {
         deployer = msg.sender;
@@ -74,6 +98,11 @@ contract AtomicDeployment {
 
     function predictedFactory() public view returns (address) {
         return address(uint160(uint256(keccak256(abi.encodePacked(hex"d694", address(this), hex"03")))));
+    }
+
+    /// @notice Nonce 4 creates the portfolio beacon; nonce 5 creates its factory proxy.
+    function predictedPortfolioFactory() public view returns (address) {
+        return address(uint160(uint256(keccak256(abi.encodePacked(hex"d694", address(this), hex"05")))));
     }
 
     function deploy(Config calldata config) external returns (Deployment memory result) {
@@ -96,6 +125,74 @@ contract AtomicDeployment {
         _validateImplementations(config);
         result = _deploy(config);
         emit SingleOwnerDeployment(config.ownerMultisig, result.factory);
+    }
+
+    /// @notice Atomically installs both single-miner and shared multi-miner projects under one governance graph.
+    /// @dev Legacy bootstrap entry points remain for historical transaction decoding and recovery.
+    function deployIntegratedSingleOwner(IntegratedConfig calldata config)
+        external
+        returns (Deployment memory result, PortfolioDeployment memory portfolio)
+    {
+        _requireUndeployed();
+        if (
+            config.core.ownerMultisig != deployer || config.core.operator == address(0)
+                || config.core.treasury == address(0)
+        ) revert InvalidRoles();
+        _validateImplementations(config.core);
+        if (
+            config.portfolioFactoryImplementation.code.length == 0
+                || config.portfolioVaultImplementation.code.length == 0
+        ) revert InvalidImplementation();
+        if (IFactoryBoundVault(config.portfolioVaultImplementation).OFFICIAL_FACTORY() != predictedPortfolioFactory()) {
+            revert InvalidBinding();
+        }
+        result = _deploy(config.core);
+        PoolBeacon portfolioBeacon = new PoolBeacon(config.portfolioVaultImplementation, result.timelock);
+        BudgetPortfolioFactory portfolioFactory =
+            BudgetPortfolioFactory(address(new ERC1967Proxy(config.portfolioFactoryImplementation, "")));
+        if (address(portfolioFactory) != predictedPortfolioFactory()) revert InvalidBinding();
+        portfolioFactory.initializeDeployment(
+            config.core.ownerMultisig,
+            config.core.operator,
+            config.core.treasury,
+            result.timelock,
+            address(portfolioBeacon),
+            result.factory,
+            config.core.marketImplementation
+        );
+        portfolio =
+            PortfolioDeployment(address(portfolioFactory), address(portfolioBeacon), portfolioFactory.shareMarket());
+        _verifyPortfolio(config, result, portfolio);
+        portfolioDeployment = portfolio;
+        emit SingleOwnerDeployment(config.core.ownerMultisig, result.factory);
+        emit IntegratedDeploymentCompleted(
+            result.factory, portfolio.factory, portfolio.beacon, portfolio.shareMarket, result.timelock
+        );
+        emit PortfolioImplementationsRecorded(
+            config.portfolioFactoryImplementation,
+            config.portfolioFactoryImplementation.codehash,
+            config.portfolioVaultImplementation,
+            config.portfolioVaultImplementation.codehash
+        );
+    }
+
+    function _verifyPortfolio(
+        IntegratedConfig calldata config,
+        Deployment memory core,
+        PortfolioDeployment memory result
+    ) private view {
+        BudgetPortfolioFactory factory = BudgetPortfolioFactory(result.factory);
+        PoolBeacon beacon = PoolBeacon(result.beacon);
+        IShareMarket market = IShareMarket(result.shareMarket);
+        if (
+            factory.owner() != config.core.ownerMultisig || factory.operator() != config.core.operator
+                || factory.treasury() != config.core.treasury || factory.timelock() != core.timelock
+                || factory.legacyFactory() != core.factory || factory.beacon() != result.beacon
+                || factory.shareMarket() != result.shareMarket || beacon.owner() != core.timelock
+                || beacon.implementation() != config.portfolioVaultImplementation
+                || beacon.OFFICIAL_FACTORY() != result.factory || market.factory() != result.factory
+                || market.timelock() != core.timelock
+        ) revert InvalidBinding();
     }
 
     function _requireUndeployed() private view {

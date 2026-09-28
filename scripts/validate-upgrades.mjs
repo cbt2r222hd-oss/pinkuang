@@ -70,6 +70,35 @@ function validateDeliveredBaselines() {
   const marketLayout = getStorageLayout(markets[0].data, getContractVersion(markets[0].data, marketContract));
   assert.equal(requireNamespacedLayout(marketLayout, 'ShareMarket'), 7, 'Unexpected initial market field count');
   console.log('ShareMarket: seven business fields and nonempty inherited namespaces extracted.');
+  const budgetName = 'src/BudgetPortfolioVault.sol:BudgetPortfolioVault';
+  const budgetCompilations = compilations.filter(({ data }) => data[budgetName]);
+  assert.equal(budgetCompilations.length, 1, 'Expected exactly one compiled BudgetPortfolioVault layout');
+  const budgetLayout = getStorageLayout(budgetCompilations[0].data, getContractVersion(budgetCompilations[0].data, budgetName));
+  const budgetTiming = budgetLayout.namespaces?.['erc7201:tapeout.storage.BudgetGovernance'];
+  assert.deepEqual(budgetTiming?.map(field => [field.label, field.type]), [['nextRoundAt', 't_uint64']],
+    'Budget governance timing must remain in its isolated namespace');
+  for (const [name, fieldCount] of [['BudgetPortfolioFactory', 9], ['BudgetPortfolioVault', 30]]) {
+    const contract = `src/${name}.sol:${name}`;
+    const baselinePath = `docs/storage/Budget-v1-${name}.json`;
+    const bytes = readFileSync(join(root, baselinePath));
+    const baseline = JSON.parse(bytes.toString('utf8'));
+    assert.equal(baseline.schemaVersion, 1);
+    assert.equal(baseline.contract, contract);
+    assert.equal(baseline.provenance.commit, '5f160c579e9d3d382df199cb29dc1573f5ae992e');
+    assert(/^[0-9a-f]{64}$/.test(baseline.provenance.sourceSha256));
+    assert.equal(baseline.layout.storage.length, fieldCount);
+    const matches = compilations.filter(({ data }) => data[contract]);
+    assert.equal(matches.length, 1);
+    const { info, data } = matches[0];
+    const current = getStorageLayout(data, getContractVersion(data, contract));
+    const report = getStorageUpgradeReport(baseline.layout, current, {});
+    results.push({ kind: 'budget-v1-baseline', contract, baselinePath,
+      baselineCommit: baseline.provenance.commit, baselineFileSha256: sha256(bytes),
+      currentSourceSha256: sha256(info.input.sources[`src/${name}.sol`].content),
+      previousFieldCount: fieldCount, currentFieldCount: current.storage.length, storageLayoutOk: report.ok, ok: report.ok });
+    assert(report.ok, `Budget storage incompatibility: ${report.explain(false)}`);
+    console.log(`${name}: original ${fieldCount} linear fields and inherited namespaces remain compatible.`);
+  }
   for (const milestone of ['T1a', 'T1b', 'T1c', 'T1d', 'T1eVoting', 'T1e']) for (const name of (milestone === 'T1eVoting' ? ['PoolVault'] : ['T1d', 'T1e'].includes(milestone) ? ['PoolFactory', 'PoolVault', 'ShareMarket'] : ['PoolFactory', 'PoolVault'])) {
     const contract = `src/${name}.sol:${name}`;
     const baselinePath = `docs/storage/${milestone}-${name}.json`;
@@ -84,6 +113,11 @@ function validateDeliveredBaselines() {
     const { info, data } = matches[0];
     const current = getStorageLayout(data, getContractVersion(data, contract));
     if (name === 'PoolVault') {
+      const firsto = current.namespaces?.['erc7201:tapeout.storage.FirstoSale'];
+      assert.deepEqual(firsto?.map(field => field.label), ['orderHash', 'expectedProceeds', 'active', 'received'],
+        'Missing isolated Firsto sale authorization namespace');
+      assert.deepEqual(firsto.map(field => field.type), ['t_bytes32', 't_uint256', 't_bool', 't_bool'],
+        'Unexpected Firsto sale authorization storage types');
       const selection = current.namespaces?.['erc7201:tapeout.storage.FlexiblePurchase'];
       assert.equal(selection?.length, 6, 'Missing actual extracted flexible purchase namespace');
       assert.deepEqual(selection.map(field => field.label), ['enabled', 'referenceCircuitId', 'config', 'modelInitialized', 'taskId', 'referenceVerifiedWeight'],

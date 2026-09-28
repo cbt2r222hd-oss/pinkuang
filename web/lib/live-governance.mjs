@@ -1,5 +1,6 @@
 import { ZeroAddress, getAddress, toQuantity } from 'ethers';
 import { abi, CHAIN_ID, uint } from './chain-client.mjs';
+import { readControlledFirstoSale } from './firsto-sale.mjs';
 
 const DAY = 86400n;
 const WEEK = 7n * DAY;
@@ -78,6 +79,11 @@ export async function readGovernanceSnapshot(provider, { factory: configuredFact
       : await call(pool, abi.PoolVault, 'getPastShares', [owner, opener.snapshotTs]);
     requireGovernance(snapshotShares <= 100n, 'Invalid snapshot share balance.');
   }
+  let firstoSale = null;
+  if (state === 3n) {
+    try { firstoSale = await readControlledFirstoSale(provider, pool, tag); }
+    catch (error) { firstoSale = Object.freeze({ available: false, reason: error?.shortMessage || error?.message || 'Firsto 成交状态暂不可用。' }); }
+  }
   const again = await request('eth_getBlockByNumber', [tag, false]);
   requireGovernance(again?.hash === block.hash && BigInt(await request('eth_chainId')) === CHAIN_ID,
     'Chain changed during governance read; refresh.');
@@ -87,7 +93,7 @@ export async function readGovernanceSnapshot(provider, { factory: configuredFact
       snapshotTs: opener.snapshotTs, executed: opener.executed,
       currentFormat: opener.snapshotTs + DAY === opener.endsAt }),
     lastProposed, shares, snapshotShares, listedProposalId, expiresAt,
-    salePrice, candidates: Object.freeze(candidates) });
+    salePrice, firstoSale, candidates: Object.freeze(candidates) });
 }
 
 /** Build exact unsigned calldata from an internally consistent chain snapshot. */
@@ -132,12 +138,17 @@ export function governanceAction(snapshot, from, action) {
     requireGovernance(snapshot.state === 3n && snapshot.listedProposalId > 0n
       && snapshot.timestamp >= snapshot.expiresAt, 'The whole-miner listing has not expired.');
     method = 'cancelExpired';
-  } else if (action?.kind === 'completeSale') {
+  } else if (action?.kind === 'completeFirstoSale') {
     chosen = candidate(snapshot.listedProposalId);
     requireGovernance(snapshot.state === 3n && chosen?.executed && snapshot.timestamp < snapshot.expiresAt
       && snapshot.salePrice > 0n && chosen.priceWei === snapshot.salePrice,
     'The whole-miner listing is not open at this exact price.');
-    method = 'completeSale'; value = snapshot.salePrice;
+    requireGovernance(snapshot.firstoSale?.available === true, '受控 Firsto 成交版本或费率尚未核验。');
+    const { feeBps, feeEpoch } = snapshot.firstoSale;
+    if (action.expectedFeeBps !== undefined) requireGovernance(feeBps === uint(action.expectedFeeBps, 16), 'Firsto fee changed; review again.');
+    if (action.expectedFeeEpoch !== undefined) requireGovernance(feeEpoch === uint(action.expectedFeeEpoch), 'Firsto fee epoch changed; review again.');
+    value = uint(snapshot.salePrice + snapshot.salePrice * feeBps / 10000n);
+    method = 'completeFirstoSale'; args = [chosen.id, snapshot.salePrice, feeBps, feeEpoch];
   } else throw new Error('Unsupported sale governance action.');
   if (action.expectedProposalId !== undefined) requireGovernance(chosen?.id === uint(action.expectedProposalId), 'Proposal changed; review again.');
   if (action.expectedPriceWei !== undefined) requireGovernance((chosen?.priceWei ?? (method === 'propose' ? uint(action.priceWei) : snapshot.salePrice)) === uint(action.expectedPriceWei), 'Price changed; review again.');
@@ -145,7 +156,10 @@ export function governanceAction(snapshot, from, action) {
     data: abi.PoolVault.encodeFunctionData(method, args), value: toQuantity(value) }),
   quote: Object.freeze({ action: method, proposalId: chosen?.id ?? null, pool: snapshot.pool,
     priceWei: chosen?.priceWei ?? (method === 'propose' ? uint(action.priceWei) : snapshot.salePrice),
-    paymentWei: value, feeWei: value / 100n, holderNetWei: value - value / 100n,
+    paymentWei: value, feeWei: value === 0n ? 0n : snapshot.salePrice / 100n,
+    holderNetWei: value === 0n ? 0n : snapshot.salePrice - snapshot.salePrice / 100n,
+    sourceFeeWei: value === 0n ? 0n : value - snapshot.salePrice,
+    feeBps: snapshot.firstoSale?.feeBps ?? null, feeEpoch: snapshot.firstoSale?.feeEpoch ?? null,
     blockNumber: snapshot.blockNumber, blockHash: snapshot.blockHash }) });
 }
 

@@ -66,8 +66,9 @@ test('Anvil: two wallets broadcast against the same final share; only one fill a
   await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
   const port = (listener.address() as { port: number }).port;
   await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
-  const node = spawn(fileURLToPath(new URL('../node_modules/.bin/anvil', import.meta.url)),
-    ['--host', '127.0.0.1', '--port', String(port), '--chain-id', '56', '--no-mining', '--base-fee', '0', '--silent'], { stdio: 'ignore' });
+  const anvilPath = process.platform === 'win32' ? '../node_modules/@foundry-rs/anvil-win32-amd64/bin/anvil.exe' : '../node_modules/.bin/anvil';
+  const node = spawn(fileURLToPath(new URL(anvilPath, import.meta.url)),
+    ['--host', '127.0.0.1', '--port', String(port), '--chain-id', '56', '--no-mining', '--base-fee', '0', '--silent'], { stdio: 'ignore', windowsHide: true });
   const provider = new JsonRpcProvider(`http://127.0.0.1:${port}`, 56, { cacheTimeout: -1, staticNetwork: true });
   const mine = (count = 1) => provider.send('anvil_mine', [toQuantity(count)]);
   try {

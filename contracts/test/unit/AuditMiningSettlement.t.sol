@@ -38,7 +38,7 @@ contract AuditMiningSettlementTest is SaleTestBase {
             vm.deal(NFT_BUYER, SALE_PRICE);
             vm.prank(NFT_BUYER);
             vm.expectRevert(IPoolVault.FinalRewardSettlementFailed.selector);
-            sale.completeSale{value: SALE_PRICE}();
+            sale.completeFirstoSale{value: SALE_PRICE}(1, SALE_PRICE, 0, 1);
             assertEq(NFT_BUYER.balance, SALE_PRICE);
             assertEq(nft.ownerOf(rewardId), address(pool));
             assertEq(mining.pending(key), 1);
@@ -65,7 +65,7 @@ contract AuditMiningSettlementTest is SaleTestBase {
         vm.deal(NFT_BUYER, SALE_PRICE);
         vm.prank(NFT_BUYER);
         vm.expectRevert(IPoolVault.FinalRewardSettlementFailed.selector);
-        sale.completeSale{value: SALE_PRICE}();
+        sale.completeFirstoSale{value: SALE_PRICE}(1, SALE_PRICE, 0, 1);
         assertEq(nft.ownerOf(rewardId), address(pool));
         assertEq(pool.balanceOf(ALICE), 49);
     }
@@ -80,7 +80,7 @@ contract AuditMiningSettlementTest is SaleTestBase {
         vm.deal(NFT_BUYER, SALE_PRICE);
         vm.prank(NFT_BUYER);
         vm.expectRevert(IPoolVault.FinalRewardSettlementFailed.selector);
-        sale.completeSale{value: SALE_PRICE}();
+        sale.completeFirstoSale{value: SALE_PRICE}(1, SALE_PRICE, 0, 1);
         assertEq(nft.ownerOf(rewardId), address(pool));
     }
 

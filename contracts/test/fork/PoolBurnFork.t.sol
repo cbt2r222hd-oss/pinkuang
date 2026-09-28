@@ -16,11 +16,12 @@ import {Addresses} from "../../script/Addresses.sol";
 /// @notice Disabled burn ABI against real BEM/WBNB balances at the reviewed BSC block.
 /// @dev Only local native funding/impersonation is used. No protocol code, storage or ERC20 balance is replaced.
 contract PoolBurnForkTest is Test {
-    uint256 private constant FORK_BLOCK = 123728000;
+    uint256 private constant FORK_BLOCK = 124308679;
     uint256 private constant TOKEN_ID = 16210;
     uint256 private constant TARGET = 0.02 ether;
     uint256 private constant PURCHASE_PRICE = 0.01 ether;
     uint256 private constant SALE_PRICE = 0.05 ether + 17;
+    uint256 private constant BUYER_PAYMENT = SALE_PRICE + SALE_PRICE / 100;
     uint256 private constant INPUT = 0.0002 ether;
     uint256 private constant OLD_WBNB = 0.00001 ether;
     address private constant ROUTER = 0x13f4EA83D0bd40E75C8222255bc855a974568Dd4;
@@ -39,6 +40,11 @@ contract PoolBurnForkTest is Test {
     PoolVault private vault;
 
     function setUp() public {
+        if (block.number == 123728000) {
+            emit log("Controlled Firsto sale requires the separate BSC 124308679 fixture command");
+            vm.skip(true);
+            return;
+        }
         require(block.chainid == 56 && block.number == FORK_BLOCK, "requires pinned BSC fork");
         assertEq(NFT.ownerOf(TOKEN_ID), SELLER);
         PoolTimelock timelock = new PoolTimelock(OWNER);
@@ -81,9 +87,9 @@ contract PoolBurnForkTest is Test {
         vm.prank(BOB);
         vault.vote(proposal, true);
         vault.executeSale(proposal);
-        vm.deal(BUYER, SALE_PRICE);
+        vm.deal(BUYER, BUYER_PAYMENT);
         vm.prank(BUYER);
-        vault.completeSale{value: SALE_PRICE}();
+        vault.completeFirstoSale{value: BUYER_PAYMENT}(proposal, SALE_PRICE, 100, 1);
         assertEq(uint256(vault.state()), uint256(IPoolVault.State.Closed));
         assertEq(NFT.ownerOf(TOKEN_ID), BUYER);
         assertEq(vault.burnBudget(), 0);

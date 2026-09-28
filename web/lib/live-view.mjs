@@ -29,10 +29,10 @@ export function viewPool(row) {
 }
 export function parseProductRoute(hash) {
   const [route, input] = (hash.replace(/^#/, '') || 'home').split('/');
-  if (route === 'detail') {
+  if (route === 'detail' || route === 'portfolio') {
     try { return { route, pool: getAddress(input) }; } catch { return { route, pool: null, invalid: true }; }
   }
-  return { route: ['home', 'overview', 'pools', 'market', 'rewards', 'governance', 'records', 'operator'].includes(route) ? route : 'home', pool: null };
+  return { route: ['home', 'overview', 'pools', 'market', 'rewards', 'governance', 'records', 'operator', 'notifications'].includes(route) ? route : 'home', pool: null };
 }
 export const explorerAddress = address => `https://bscscan.com/address/${getAddress(address)}`;
 export const explorerTransaction = hash => /^0x[\da-f]{64}$/i.test(hash ?? '') ? `https://bscscan.com/tx/${hash}` : null;

@@ -25,7 +25,9 @@ export function serverConfiguration(env = process.env) {
   if (port < 1 || port > 65535) throw new Error('Invalid port.');
   const scanRange = exactNumber(env.CHAIN_INDEX_SCAN_RANGE ?? '100', 'scan range');
   if (scanRange < 1 || scanRange > 500) throw new Error('Scan range must be between 1 and 500 blocks.');
+  if(Boolean(env.CHAIN_INDEX_PORTFOLIO_FACTORY)!==Boolean(env.CHAIN_INDEX_PORTFOLIO_MARKET))throw new Error('Configure both portfolio Factory and market.');
   return { rpc, logsRpc, host, port, dbPath: required(env, 'CHAIN_INDEX_DB'), factory: required(env, 'CHAIN_INDEX_FACTORY'),
+    ...(env.CHAIN_INDEX_PORTFOLIO_FACTORY?{portfolioFactory:env.CHAIN_INDEX_PORTFOLIO_FACTORY,portfolioMarket:env.CHAIN_INDEX_PORTFOLIO_MARKET}:{}),
     market: required(env, 'CHAIN_INDEX_MARKET'), startBlock: exactNumber(required(env, 'CHAIN_INDEX_START_BLOCK'), 'start block'),
     confirmations: exactNumber(env.CHAIN_INDEX_CONFIRMATIONS || '12', 'confirmations'), scanRange };
 }

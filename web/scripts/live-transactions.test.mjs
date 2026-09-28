@@ -180,7 +180,7 @@ test('recovery reads saved finalized result after lost DELETE ACK, never signing
 test('all product actions and market actions use the same intent slot; arbitrary approvals are rejected',async()=>{
   for(const [name,args,value,target] of [['harvest',[],'0',pool],['claim',[],'0',pool],['withdrawBnb',[],'0',pool],
     ['withdrawDeposit',[],'0',pool],['finalizeFailure',[],'0',pool],['propose',[200,200,1],'0',pool],['vote',[1,true],'0',pool],
-    ['executeSale',[1],'0',pool],['cancelExpired',[],'0',pool],['completeSale',[],'200',pool],
+    ['executeSale',[1],'0',pool],['cancelExpired',[],'0',pool],['completeFirstoSale',[1,200,100,1],'202',pool],
     ['list',[pool,2,5],'0',market],['fill',[1,2],'10',market],['cancel',[1],'0',market],['expire',[1],'0',market],['withdrawBnb',[],'0',market]]){
     const f=fixture();const result=await f.send(name,args,value,target);assert.equal(result.status,'confirmed',name);
     const initial=f.calls.find(x=>x.method==='PUT').body.record;

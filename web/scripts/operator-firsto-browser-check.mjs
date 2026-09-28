@@ -63,7 +63,7 @@ try {
   await page.getByRole('button', { name: '连接 MetaMask', exact: true }).click();
   await page.locator('nav').getByRole('button', { name: '运营工作台', exact: true }).click();
   await page.getByRole('button', { name: '浏览 Firsto 候选', exact: true }).click();
-  await page.getByRole('button', { name: '先查官网并选择', exact: true }).click();
+  await page.getByRole('button', { name: '链上核对并选择', exact: true }).click();
   await page.getByText('矿池总支出 0.005050000000000001 BNB', { exact: true }).waitFor();
   await page.getByRole('button', { name: '填入建池表单', exact: true }).click();
   assert.equal(await page.getByLabel('购机价格上限（BNB）', { exact: true }).inputValue(), '0.005050000000000001');
@@ -104,7 +104,7 @@ try {
   await page.getByRole('alert').filter({ hasText: '尚未开放 Firsto 采购' }).waitFor();
   assert(await page.getByRole('button', { name: '浏览 Firsto 候选', exact: true }).isEnabled());
   await page.getByRole('button', { name: '浏览 Firsto 候选', exact: true }).click();
-  await page.getByRole('button', { name: '先查官网并选择', exact: true }).click();
+  await page.getByRole('button', { name: '链上核对并选择', exact: true }).click();
   await page.getByText('当前工厂版本尚未开放 Firsto 合约采购。', { exact: true }).waitFor();
   assert(await page.getByRole('button', { name: '填入建池表单', exact: true }).isDisabled());
   await page.getByRole('button', { name: '灵活购机报价建池', exact: true }).click();

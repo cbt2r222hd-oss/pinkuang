@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getAddress, ZeroAddress, toQuantity, formatEther } from 'ethers';
+import { firstoProvider, runtime } from '../../deploy/scripts/fixtures/firsto-order.mjs';
+import { FIRSTO_SIGNED_EXCHANGE } from '../../deploy/src/firsto-purchase.mjs';
+import { Interface } from 'ethers';
+const capability = new Interface(['function controlledFirstoSaleVersion() view returns(uint8)']);
 import { abi } from '../lib/chain-client.mjs';
 import { shareQuantity, exactPrice, prepareProductAction } from '../lib/live-actions.mjs';
 
@@ -28,8 +32,14 @@ function gov(change = {}, state = 2n) { return { status: status(allGov), state, 
 function mock(options = {}) {
   const requests = [], invocations = [], raw = row(options.row), governance = gov(options.gov, raw.state);
   let headerCount = 0, chainCount = 0;
+  const external = firstoProvider({ account }, options.firsto ?? {}).provider;
   return { requests, invocations, async request(input) {
     requests.push(input); const { method, params: args = [] } = input;
+    if (method === 'eth_getStorageAt' || method === 'eth_getCode' && [FIRSTO_SIGNED_EXCHANGE, runtime.implementation].some(a => a.toLowerCase() === args[0].toLowerCase()) || method === 'eth_call' && args[0].to.toLowerCase() === FIRSTO_SIGNED_EXCHANGE.toLowerCase()) return external.request(input);
+    if (method === 'eth_call' && args[0].data === capability.encodeFunctionData('controlledFirstoSaleVersion')) {
+      if (options.oldSale) throw new Error('old implementation');
+      return capability.encodeFunctionResult('controlledFirstoSaleVersion', [1]);
+    }
     if (method === 'eth_chainId') return options.wrongChain || options.flipChain && ++chainCount >= 4 ? '0x1' : '0x38';
     if (method === 'eth_getBlockByNumber') {
       headerCount++;
@@ -212,11 +222,11 @@ test('seller cancellation and permissionless expiry remain available for frozen 
 test('sale candidates use reviewed multi-candidate reads and bind the confirmed price and identity', async()=>{
   const proposals=[{...proposal,price:2000n}, {...proposal,price:900n,executed:true}];
   const options={row:{state:3n},gov:{listedProposalId:2n,salePrice:900n},proposals};
-  const bought=await prepare(mock(options),{kind:'completeSale'});
-  assert.equal(BigInt(bought.transaction.value),900n);assert.equal(bought.quote.proposalId,2n);
+  const bought=await prepare(mock(options),{kind:'completeFirstoSale'});
+  assert.equal(BigInt(bought.transaction.value),909n);assert.equal(bought.quote.proposalId,2n);
   for(const expected of [{expectedPriceWei:'1000'},{expectedProposalId:'1'},{expectedPool:addr(99)},{expectedAccount:seller}])
-    await assert.rejects(prepare(mock(options),{kind:'completeSale',...expected}));
-  assert.equal((await prepare(mock(options),{kind:'completeSale',expectedPriceWei:'900',expectedProposalId:'2',expectedPool:pool,expectedAccount:account})).kind,'completeSale');
+    await assert.rejects(prepare(mock(options),{kind:'completeFirstoSale',...expected}));
+  assert.equal((await prepare(mock(options),{kind:'completeFirstoSale',expectedPriceWei:'900',expectedProposalId:'2',expectedPool:pool,expectedAccount:account})).kind,'completeFirstoSale');
 });
 
 test('additional sale candidates, votes and reference disclosure follow the audited governance module',async()=>{

@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       run_fork:
-        description: Run protocol, purchase, rewards, shares, controlled sale and disabled-burn regression forks on the reviewed fixed block
+        description: Run protocol and purchase baseline plus strict Firsto sale regressions on their separate fixed blocks
         type: boolean
         default: false
 
@@ -125,11 +125,11 @@ jobs:
         with:
           version: v1.7.1
       - run: npm ci
-      - name: Protocol, purchase, rewards, shares, controlled sale and disabled-burn regression forks
+      - name: Protocol, official purchase, rewards and shares at the original baseline
         env:
           VALIDATION_EVIDENCE_ROOT: ${{ runner.temp }}/t1e-fork-${{ github.run_id }}-${{ github.run_attempt }}
         run: npm run test:fork
-      - name: Firsto real signed order into a funded Pool at its separate fixed block
+      - name: Firsto real purchase and strict controlled sale, settlement and fee regressions at block 124308679
         env:
           VALIDATION_EVIDENCE_ROOT: ${{ runner.temp }}/t1e-fork-${{ github.run_id }}-${{ github.run_attempt }}/firsto
         run: npm run test:fork:firsto

@@ -20,7 +20,7 @@ contract RejectingSaleForkBuyer is IERC721Receiver {
     error RejectedNFT();
 
     function buy(PoolVault vault) external payable {
-        vault.completeSale{value: msg.value}();
+        vault.completeFirstoSale{value: msg.value}(vault.listedProposalId(), vault.salePrice(), 100, 1);
     }
 
     function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
@@ -28,15 +28,17 @@ contract RejectingSaleForkBuyer is IERC721Receiver {
     }
 }
 
-/// @notice Complete production sale against real NFT, Mining and BEM at the pinned BSC block.
+/// @notice Controlled Firsto V2 sale against real exchange, NFT, Mining and BEM at BSC 124308679.
 /// @dev Only native funding, local owner impersonation and time progression are simulated.
 /// No protocol code, protocol storage, NFT balances or BEM balances are replaced.
 contract PoolSaleForkTest is Test {
-    uint256 private constant FORK_BLOCK = 123728000;
+    uint256 private constant FORK_BLOCK = 124308679;
     uint256 private constant TOKEN_ID = 16210;
     uint256 private constant RAISE = 0.02 ether;
     uint256 private constant PURCHASE_PRICE = 0.01 ether;
     uint256 private constant SALE_PRICE = 0.1 ether;
+    uint256 private constant BUYER_PAYMENT = SALE_PRICE + SALE_PRICE / 100;
+    address private constant FIRSTO = 0x33423244F9a5bF81b12B1a018aF6F4e079B97f29;
     address private constant SELLER = 0xd48aaaF5DB140ccbd64A8fBD1B63f3f631443744;
     address private constant OWNER = address(0x1111);
     address private constant OPERATOR = address(0x2222);
@@ -71,7 +73,13 @@ contract PoolSaleForkTest is Test {
     uint256 private sellerBemAfterPurchase;
 
     function setUp() public {
+        if (block.number == 123728000) {
+            emit log("Controlled Firsto sale requires the separate BSC 124308679 fixture command");
+            vm.skip(true);
+            return;
+        }
         require(block.chainid == 56 && block.number == FORK_BLOCK, "requires pinned BSC fork");
+        assertGt(FIRSTO.code.length, 0, "real Firsto V2 exchange must exist");
         assertEq(NFT.ownerOf(TOKEN_ID), SELLER);
         key = MINING.minerKey(Addresses.TAPEOUT_CIRCUITS, TOKEN_ID);
         assertEq(MINING.getMiner(key).status, 1);
@@ -116,7 +124,7 @@ contract PoolSaleForkTest is Test {
         assertEq(vault.bnbOwed(SELLER), PURCHASE_PRICE, "keep original seller pull credit through later sale");
         assertEq(NFT.ownerOf(TOKEN_ID), address(vault));
         assertEq(uint256(vault.state()), uint256(IPoolVault.State.Active));
-        vm.deal(BUYER, SALE_PRICE);
+        vm.deal(BUYER, BUYER_PAYMENT);
     }
 
     function test_Fork_ProductionSaleSettlesThenTransfersAndPaysOriginalMembers() public {
@@ -128,7 +136,7 @@ contract PoolSaleForkTest is Test {
         uint256 buyerBemBefore = BEM.balanceOf(BUYER);
         vm.recordLogs();
         vm.prank(BUYER);
-        vault.completeSale{value: SALE_PRICE}();
+        vault.completeFirstoSale{value: BUYER_PAYMENT}(proposalId, SALE_PRICE, 100, 1);
         Vm.Log[] memory entries = vm.getRecordedLogs();
 
         uint256 finalGross = BEM.totalSupply() - before.supply;
@@ -151,7 +159,10 @@ contract PoolSaleForkTest is Test {
         assertEq(vault.listedProposalId(), proposalId);
         assertEq(vault.completedAt(), block.timestamp);
         assertEq(address(vault).balance - before.vaultBnb, SALE_PRICE);
-        assertEq(before.buyerBnb - BUYER.balance, SALE_PRICE);
+        assertEq(before.buyerBnb - BUYER.balance, BUYER_PAYMENT);
+        assertEq(NFT.getApproved(TOKEN_ID), address(0));
+        vm.prank(FIRSTO);
+        assertEq(vault.isValidSignature(bytes32(0), new bytes(65)), bytes4(0xffffffff));
         _assertBnbLiabilities();
         _assertOnlyBuyerReceivesFutureRewards();
         _withdrawOriginalRights();
@@ -190,7 +201,7 @@ contract PoolSaleForkTest is Test {
         Balances memory before = _balances(BUYER);
         vm.prank(BUYER);
         vm.expectRevert(IPoolVault.NotOwnerAfterBuy.selector);
-        vault.completeSale{value: SALE_PRICE}();
+        vault.completeFirstoSale{value: BUYER_PAYMENT}(1, SALE_PRICE, 100, 1);
         _assertSaleRollback(before, BUYER);
         assertEq(NFT.ownerOf(TOKEN_ID), WRONG_OWNER, "failed sale cannot manufacture a handover record");
     }
@@ -200,17 +211,17 @@ contract PoolSaleForkTest is Test {
         _advanceOneHour();
         assertGt(MINING.pending(key), 0);
         RejectingSaleForkBuyer rejector = new RejectingSaleForkBuyer();
-        vm.deal(address(this), SALE_PRICE);
+        vm.deal(address(this), BUYER_PAYMENT);
         Balances memory before = _balances(address(this));
         vm.expectRevert(RejectingSaleForkBuyer.RejectedNFT.selector);
-        rejector.buy{value: SALE_PRICE}(vault);
+        rejector.buy{value: BUYER_PAYMENT}(vault);
         _assertSaleRollback(before, address(this));
         assertEq(NFT.ownerOf(TOKEN_ID), address(vault));
         assertGt(MINING.pending(key), 0, "failed handover rolls back the earlier real protocol claim");
         assertEq(MINING.getMiner(key).status, 1);
         // A successful retry uses the very same listing and still performs final settlement.
         vm.prank(BUYER);
-        vault.completeSale{value: SALE_PRICE}();
+        vault.completeFirstoSale{value: BUYER_PAYMENT}(1, SALE_PRICE, 100, 1);
         assertEq(NFT.ownerOf(TOKEN_ID), BUYER);
         assertEq(vault.saleBuyer(), BUYER);
         assertEq(MINING.pending(key), 0);

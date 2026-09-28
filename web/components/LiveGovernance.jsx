@@ -83,8 +83,9 @@ export default function LiveGovernance({ config, account, wallet, pools = [], di
     try {
       await onAction(preview.pool, { ...preview.action, expectedPool: preview.pool,
         expectedAccount: preview.account,
-        ...(preview.action.kind === 'completeSale' ? { expectedPriceWei: preview.quote.priceWei.toString(),
-          expectedProposalId: preview.quote.proposalId.toString() } : {}) });
+        ...(preview.action.kind === 'completeFirstoSale' ? { expectedPriceWei: preview.quote.priceWei.toString(),
+          expectedProposalId: preview.quote.proposalId.toString(), expectedFeeBps: preview.quote.feeBps.toString(),
+          expectedFeeEpoch: preview.quote.feeEpoch.toString() } : {}) });
       if (!requests.current.current(ticket)) return;
       setPreview(null);
       await refresh();
@@ -110,8 +111,8 @@ export default function LiveGovernance({ config, account, wallet, pools = [], di
             refAt: snapshot.timestamp.toString() });
         } catch (problem) { report(problem); }
       }}>预览提案<ArrowRight size={15}/></button></div></div>}
-      {listed && <div className="live-gov-listing"><h3>链上整机挂牌</h3><p>提案 #{snapshot.listedProposalId.toString()} · 价格 {formatEther(snapshot.salePrice)} BNB · 到期 {when(snapshot.expiresAt)}。成交时必须原子结清挖矿收益；若外部协议未能结清，交易会回退。</p><div><button disabled={frozen || snapshot.timestamp >= snapshot.expiresAt} onClick={() => void showPreview({ kind: 'completeSale' })}>按链上价格购买整机</button><button disabled={frozen || snapshot.timestamp < snapshot.expiresAt} onClick={() => void showPreview({ kind: 'cancelExpired' })}>撤销过期挂牌</button></div></div>}
+      {listed && <div className="live-gov-listing"><h3>链上整机挂牌</h3><p>提案 #{snapshot.listedProposalId.toString()} · 价格 {formatEther(snapshot.salePrice)} BNB · 到期 {when(snapshot.expiresAt)}。本站通过 Firsto 合约成交，买方另付 Firsto 手续费，矿池收取挂牌价后扣除平台 1%。成交时同笔结清挖矿收益，失败则整笔回退；暂不向 Firsto 外部页面发布挂单。</p>{!snapshot.firstoSale?.available && <p role="status">当前成交路由尚未核验，请刷新或等待合约升级。</p>}<div><button disabled={frozen || snapshot.timestamp >= snapshot.expiresAt || !snapshot.firstoSale?.available} onClick={() => void showPreview({ kind: 'completeFirstoSale' })}>通过 Firsto 购买整机</button><button disabled={frozen || snapshot.timestamp < snapshot.expiresAt} onClick={() => void showPreview({ kind: 'cancelExpired' })}>撤销过期挂牌</button></div></div>}
     </>}
-    {preview && preview.identity === identity && <div className="live-gov-preview" role="dialog" aria-label="确认整机出售操作"><h3>确认 {({ propose: '提交报价', vote: '投票', executeSale: '执行挂牌', completeSale: '购买整机', cancelExpired: '撤销过期挂牌' })[preview.action.kind]}</h3><p>矿池 {short(preview.pool)} · 读取区块 #{preview.quote.blockNumber.toString()}。发送前将再次读取链上数据、模拟交易，并把交易意图记录到服务器。</p><dl><div><dt>报价 / 挂牌价</dt><dd>{formatEther(preview.quote.priceWei)} BNB</dd></div><div><dt>本次钱包支付</dt><dd>{formatEther(preview.quote.paymentWei)} BNB + Gas</dd></div>{preview.action.kind === 'completeSale' && <><div><dt>平台费 1%</dt><dd>{formatEther(preview.quote.feeWei)} BNB</dd></div><div><dt>持有人分配</dt><dd>{formatEther(preview.quote.holderNetWei)} BNB</dd></div></>}{preview.action.kind === 'vote' && <div><dt>投票选择</dt><dd>{preview.action.support ? '赞成' : '反对'}</dd></div>}</dl><div><button disabled={busy} onClick={() => setPreview(null)}>返回</button><button disabled={busy || disabled} onClick={() => void submit()}>发送到钱包确认</button></div></div>}
+    {preview && preview.identity === identity && <div className="live-gov-preview" role="dialog" aria-label="确认整机出售操作"><h3>确认 {({ propose: '提交报价', vote: '投票', executeSale: '执行挂牌', completeFirstoSale: '通过 Firsto 购买整机', cancelExpired: '撤销过期挂牌' })[preview.action.kind]}</h3><p>矿池 {short(preview.pool)} · 读取区块 #{preview.quote.blockNumber.toString()}。发送前将再次读取链上数据、模拟交易，并把交易意图记录到服务器。</p><dl><div><dt>报价 / 挂牌价</dt><dd>{formatEther(preview.quote.priceWei)} BNB</dd></div><div><dt>本次钱包支付</dt><dd>{formatEther(preview.quote.paymentWei)} BNB + Gas</dd></div>{preview.action.kind === 'completeFirstoSale' && <><div><dt>Firsto 买方手续费</dt><dd>{formatEther(preview.quote.sourceFeeWei)} BNB</dd></div><div><dt>平台费 1%</dt><dd>{formatEther(preview.quote.feeWei)} BNB</dd></div><div><dt>持有人分配</dt><dd>{formatEther(preview.quote.holderNetWei)} BNB</dd></div></>}{preview.action.kind === 'vote' && <div><dt>投票选择</dt><dd>{preview.action.support ? '赞成' : '反对'}</dd></div>}</dl><div><button disabled={busy} onClick={() => setPreview(null)}>返回</button><button disabled={busy || disabled} onClick={() => void submit()}>发送到钱包确认</button></div></div>}
   </section>;
 }

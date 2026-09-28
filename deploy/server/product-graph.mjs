@@ -9,7 +9,9 @@ const same = (a,b) => typeof a === 'string' && typeof b === 'string' && a.toLowe
 const check = (condition, message) => { if (!condition) throw new Error(message); };
 const LIBRARIES = ['FlexiblePurchase','MiningOperations','PoolFunds','PurchaseValidation','RewardAccounting','SaleGovernance','SaleSettlement','ShareCheckpoints'];
 const NAMES = [...LIBRARIES,'AtomicDeployment','PoolVault','PoolFactory','ShareMarket','factory','shareMarket','lens','beacon','timelock'];
-const artifacts = { factory:'ERC1967Proxy',shareMarket:'ERC1967Proxy',lens:'PoolLens',beacon:'PoolBeacon',timelock:'PoolTimelock' };
+const INTEGRATED_NAMES = [...NAMES,'FirstoSale','BudgetPortfolioFactory','BudgetPortfolioVault','portfolioFactory','portfolioShareMarket','portfolioBeacon'];
+const artifacts = { factory:'ERC1967Proxy',shareMarket:'ERC1967Proxy',lens:'PoolLens',beacon:'PoolBeacon',timelock:'PoolTimelock',
+  portfolioFactory:'ERC1967Proxy',portfolioShareMarket:'ERC1967Proxy',portfolioBeacon:'PoolBeacon' };
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])) : value;
 function digest(bundle) { const {sourceCommit: _source,...content}=bundle; return keccak256(toUtf8Bytes(JSON.stringify(canonical(content)))); }
@@ -32,7 +34,7 @@ function linked(code, references, addresses) {
 function runtimeMatches(artifact, observed, addresses, ownAddress) {
   let expected=linked(artifact.deployedBytecode,artifact.deployedLinkReferences,addresses), actual=observed.slice(2).toLowerCase();
   if (expected.length!==actual.length) return false;
-  if (LIBRARIES.includes(artifact.contractName) && expected.startsWith(`73${'0'.repeat(40)}`)) expected=`73${ownAddress.slice(2).toLowerCase()}${expected.slice(42)}`;
+  if ([...LIBRARIES,'FirstoSale'].includes(artifact.contractName) && expected.startsWith(`73${'0'.repeat(40)}`)) expected=`73${ownAddress.slice(2).toLowerCase()}${expected.slice(42)}`;
   for (const locations of Object.values(artifact.immutableReferences ?? {})) for (const {start,length} of locations) {
     if(start<0 || length<=0 || (start+length)*2>expected.length)return false;
     expected=expected.slice(0,start*2)+'0'.repeat(length*2)+expected.slice((start+length)*2);
@@ -57,13 +59,17 @@ export function productGraphConfiguration({ recordPath, bundlePath, record, bund
       sourceCommit:bundle.sourceCommit,verification:{...record.verification,code:genesisRecord.verification.code}};
     return JSON.parse(JSON.stringify({record:normalized,bundle,upgradeRecord:record,genesisRecord,genesisBundle}));
   }
-  check(record?.schemaVersion===1 && record.chainId===56 && record.status==='complete'
-    && record.steps?.length===13 && record.steps.every(step=>step.status==='confirmed')
+  const integrated=record?.kind==='integrated-v2';
+  check(record?.schemaVersion===1 && (record.kind===undefined || integrated) && record.chainId===56 && record.status==='complete'
+    && record.steps?.length===(integrated ? 16 : 13) && record.steps.every(step=>step.status==='confirmed')
     && record.steps.some(step=>step.id==='initialize' && step.receipt?.status===1 && HASH.test(step.txHash))
     && HASH.test(record.artifactDigest) && same(digest(bundle),record.artifactDigest)
     && record.verification?.checks?.length>0 && record.verification.checks.every(item=>item.passed),
   'Trusted product deployment is not a completed, verified deployment of this build.');
-  for (const name of NAMES) {
+  if (integrated) check(record.input?.governanceMode==='single'
+    && same(record.addresses.portfolioVaultImplementation,record.addresses.BudgetPortfolioVault)
+    && same(record.addresses.portfolioFactoryImplementation,record.addresses.BudgetPortfolioFactory),'Portfolio implementation aliases differ.');
+  for (const name of integrated ? INTEGRATED_NAMES : NAMES) {
     const address=getAddress(record.addresses[name]), code=record.verification.code[name];
     check(same(address,code?.address) && HASH.test(code?.codehash ?? ''),`Missing trusted code evidence for ${name}.`);
     check(bundle.artifacts[artifacts[name] ?? name],`Missing trusted artifact for ${name}.`);
@@ -76,17 +82,19 @@ export function productGraphConfiguration({ recordPath, bundlePath, record, bund
 export async function verifyProductGraph(provider, factory, trusted, block) {
   check(trusted?.record && trusted?.bundle,'Trusted product deployment evidence is unavailable.');
   const {record,bundle}=trusted, a=record.addresses, tag=`0x${block.number.toString(16)}`;
-  check(same(factory,a.factory),'Factory differs from the trusted deployment.');
+  const integrated=record.kind==='integrated-v2';
+  const budget=integrated && same(factory,a.portfolioFactory);
+  check(same(factory,a.factory) || budget,'Factory differs from the trusted deployment.');
   const upgradeProof=trusted.upgradeRecord ? await verifyFirstoUpgradeProof(provider,trusted,block) : null;
   const upgradedNames=trusted.upgradeRecord ? upgradeNamesForKind(trusted.upgradeRecord.kind) : [];
   const sourceFor=name=>trusted.upgradeRecord && !upgradedNames.includes(name) ? trusted.genesisBundle : bundle;
   const runtimeLinksFor=name=>trusted.upgradeRecord && !upgradedNames.includes(name) ? trusted.genesisRecord.addresses : a;
   const read=async(name,method,args=[])=>{
-    const artifactName=({factory:'PoolFactory',shareMarket:'ShareMarket'})[name] ?? artifacts[name] ?? name;
+    const artifactName=({factory:'PoolFactory',shareMarket:'ShareMarket',portfolioFactory:'BudgetPortfolioFactory',portfolioShareMarket:'ShareMarket'})[name] ?? artifacts[name] ?? name;
     const iface=new Interface(sourceFor(artifactName).artifacts[artifactName].abi);
     return iface.decodeFunctionResult(method,await provider.send('eth_call',[{to:a[name],data:iface.encodeFunctionData(method,args)},tag]))[0];
   };
-  await settleReads(NAMES.map(async name=>{
+  await settleReads((integrated ? INTEGRATED_NAMES : NAMES).map(async name=>{
     const code=await provider.getCode(a[name],block.number);
     const upgraded=trusted.upgradeRecord && upgradedNames.includes(name);
     check(code!=='0x' && (upgraded || same(keccak256(code),record.verification.code[name].codehash))
@@ -100,9 +108,18 @@ export async function verifyProductGraph(provider, factory, trusted, block) {
     ['shareMarket','feeBps',100n],['beacon','owner',a.timelock],['beacon','implementation',a.PoolVault],
     ['beacon','OFFICIAL_FACTORY',a.factory],['PoolVault','OFFICIAL_FACTORY',a.factory],
     ['timelock','getMinDelay',172800n],['timelock','MINIMUM_DELAY',172800n]];
-  if (trusted.upgradeRecord?.kind === SHARE_FEE_UPGRADE_KIND) assertions.push(['shareMarket','buyerFeeBps',100n]);
+  if (trusted.upgradeRecord?.kind === SHARE_FEE_UPGRADE_KIND || integrated) assertions.push(['shareMarket','buyerFeeBps',100n]);
+  if (integrated) assertions.push(['AtomicDeployment','predictedPortfolioFactory',a.portfolioFactory],
+    ['portfolioFactory','owner',record.input.ownerMultisig],['portfolioFactory','operator',record.input.operator],
+    ['portfolioFactory','treasury',record.input.treasury],['portfolioFactory','timelock',a.timelock],
+    ['portfolioFactory','legacyFactory',a.factory],['portfolioFactory','beacon',a.portfolioBeacon],
+    ['portfolioFactory','shareMarket',a.portfolioShareMarket],['portfolioShareMarket','factory',a.portfolioFactory],
+    ['portfolioShareMarket','timelock',a.timelock],['portfolioShareMarket','feeBps',100n],['portfolioShareMarket','buyerFeeBps',100n],
+    ['portfolioBeacon','owner',a.timelock],['portfolioBeacon','implementation',a.BudgetPortfolioVault],
+    ['portfolioBeacon','OFFICIAL_FACTORY',a.portfolioFactory],['BudgetPortfolioVault','OFFICIAL_FACTORY',a.portfolioFactory]);
   await settleReads(assertions.map(async([name,method,expected])=>check(String(await read(name,method)).toLowerCase()===String(expected).toLowerCase(),`Reviewed binding changed: ${name}.${method}.`)));
-  await settleReads([['factory','PoolFactory'],['shareMarket','ShareMarket']].map(async([name,implementation])=>{
+  await settleReads([['factory','PoolFactory'],['shareMarket','ShareMarket'],...(integrated
+    ? [['portfolioFactory','BudgetPortfolioFactory'],['portfolioShareMarket','ShareMarket']] : [])].map(async([name,implementation])=>{
     const slot=await provider.getStorage(a[name],SLOT,block.number);
     check(/^0x0{24}[\da-f]{40}$/i.test(slot) && same(`0x${slot.slice(-40)}`,a[implementation]),`Reviewed implementation changed: ${name}.`);
   }));
@@ -111,6 +128,8 @@ export async function verifyProductGraph(provider, factory, trusted, block) {
     [roles[2],ZERO,true],[roles[3],a.timelock,true],[roles[3],record.account,false],[roles[3],a.AtomicDeployment,false]].map(async([role,account,expected])=>
       check(await read('timelock','hasRole',[role,account])===expected,'Reviewed Timelock permissions changed.')));
   check((await provider.getBlock(block.number))?.hash===block.hash,'Chain changed during product graph verification.');
-  return {factory:a.factory,operator:record.input.operator,artifactDigest:record.artifactDigest,blockNumber:block.number,
+  return {factory:budget ? a.portfolioFactory : a.factory,productKind:budget ? 'budget' : 'pool',
+    ...(integrated ? {legacyFactory:a.factory,portfolioFactory:a.portfolioFactory} : {}),
+    operator:record.input.operator,artifactDigest:record.artifactDigest,blockNumber:block.number,
     ...(upgradeProof ? {upgrade:upgradeProof} : {})};
 }

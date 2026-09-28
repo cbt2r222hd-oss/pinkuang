@@ -10,7 +10,9 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 import {IPoolVault, IPoolFactoryRoles} from "./interfaces/IPoolVault.sol";
 import {PoolRewardState} from "./PoolRewardState.sol";
 import {PoolSaleState} from "./PoolSaleState.sol";
+import {FirstoSaleState} from "./FirstoSaleState.sol";
 import {RewardAccounting} from "./libraries/RewardAccounting.sol";
+import {FirstoSale} from "./libraries/FirstoSale.sol";
 import {MiningOperations} from "./libraries/MiningOperations.sol";
 import {ShareCheckpoints} from "./libraries/ShareCheckpoints.sol";
 import {SaleGovernance} from "./libraries/SaleGovernance.sol";
@@ -31,7 +33,8 @@ contract PoolVault is
     PoolRewardState,
     PoolSaleState,
     PoolVaultState,
-    PurchaseSelectionState
+    PurchaseSelectionState,
+    FirstoSaleState
 {
     using Checkpoints for Checkpoints.Trace208;
 
@@ -62,23 +65,10 @@ contract PoolVault is
     }
 
     function initialize(address factory_, PoolParams calldata params_, address treasury_) external initializer {
-        if (
-            factory_ != OFFICIAL_FACTORY || msg.sender != OFFICIAL_FACTORY || factory_.code.length == 0
-                || treasury_ == address(0)
-        ) revert Unauthorized();
-        if (params_.targetRaise == 0 || params_.targetRaise % TOTAL_SHARES != 0) revert FundingTargetNotDivisible();
-        if (params_.priceCap == 0 || params_.priceCap > params_.targetRaise) revert OverPriceCap();
-        if (params_.fundingDeadline <= block.timestamp || params_.purchaseDeadline <= params_.fundingDeadline) {
-            revert InvalidParameters();
-        }
+        if (factory_ != OFFICIAL_FACTORY) revert Unauthorized();
+        PoolFunds.initialize(_vaultStorage(), factory_, params_, treasury_);
         __ERC20_init(PoolFunds.shareName(params_.circuits, params_.circuitId), "TPS");
         __ReentrancyGuard_init();
-        VaultStorage storage s = _vaultStorage();
-        s.factory = factory_;
-        s.treasury = treasury_;
-        s.params = params_;
-        s.unitPriceWei = params_.targetRaise / TOTAL_SHARES;
-        s.state = State.Funding;
         _rewardStorage().expiryDisabled = true;
     }
 
@@ -291,20 +281,35 @@ contract PoolVault is
         s.state = State.Active;
     }
 
-    function completeSale() external payable nonReentrant {
+    /// @notice Legacy direct venue is disabled; approved NFT sales now execute through Firsto atomically.
+    function completeSale() external payable {
+        revert UnverifiedSaleRoute();
+    }
+
+    function completeFirstoSale(
+        uint256 expectedProposalId,
+        uint256 expectedSalePrice,
+        uint16 expectedFeeBps,
+        uint256 expectedFeeEpoch
+    ) external payable nonReentrant {
         VaultStorage storage s = _vaultStorage();
-        SaleStorage storage sale = _saleStorage();
         if (s.state != State.Listed) revert WrongState();
-        // A listing approved before the atomic snapshot fix cannot settle after
-        // this implementation is installed. It remains cancellable at expiry.
-        Proposal storage listed = sale.proposals[sale.listedProposalId];
-        if (uint256(listed.snapshotTs) + voteDuration != listed.endsAt) revert InvalidProposal();
-        if (block.timestamp >= sale.expiresAt) revert DeadlinePassed();
-        if (msg.value != sale.salePrice) revert PaymentMismatch();
-        // The guarded internal path proves receipt, zero pending and unchanged
-        // NFT/miner identity, then accounts all old-owner income before transfer.
         (uint256 settledBem,,,) = _harvest(true);
-        SaleSettlement.complete(s, sale, settledBem);
+        FirstoSale.complete(
+            s,
+            _saleStorage(),
+            FirstoSale.Confirmation(expectedProposalId, expectedSalePrice, expectedFeeBps, expectedFeeEpoch),
+            settledBem
+        );
+    }
+
+    /// @notice Only the exact Firsto order in the current guarded transaction can pass.
+    function isValidSignature(bytes32 orderHash, bytes calldata) external view returns (bytes4) {
+        return FirstoSale.isValidSignature(orderHash);
+    }
+
+    function controlledFirstoSaleVersion() external pure returns (uint8) {
+        return 1;
     }
 
     /// @notice Reserved for a future verified adapter. Controlled sales settle atomically above.
@@ -696,6 +701,6 @@ contract PoolVault is
     }
 
     receive() external payable {
-        revert UnsupportedSubscriptionAsset();
+        FirstoSale.receivePayment();
     }
 }

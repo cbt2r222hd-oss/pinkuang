@@ -7,6 +7,8 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IShareMarket} from "./interfaces/IShareMarket.sol";
 import {BudgetPortfolioVault} from "./BudgetPortfolioVault.sol";
 
 interface IBudgetRegisteredMarket {
@@ -52,6 +54,40 @@ contract BudgetPortfolioFactory is OwnableUpgradeable, UUPSUpgradeable, Reentran
         address beacon_,
         address legacyFactory_
     ) external initializer {
+        _initialize(owner_, operator_, treasury_, timelock_, beacon_, legacyFactory_);
+    }
+
+    /// @notice Bootstrap the project factory and its market in one atomic initialization.
+    /// @dev The initializer never yields an unregistered factory across a transaction boundary.
+    function initializeDeployment(
+        address owner_,
+        address operator_,
+        address treasury_,
+        address timelock_,
+        address beacon_,
+        address legacyFactory_,
+        address marketImplementation_
+    ) external initializer {
+        _initialize(owner_, operator_, treasury_, timelock_, beacon_, legacyFactory_);
+        if (marketImplementation_.code.length == 0) revert InvalidAddress();
+        shareMarket = address(
+            new ERC1967Proxy(marketImplementation_, abi.encodeCall(IShareMarket.initialize, (address(this), timelock_)))
+        );
+        if (
+            IBudgetRegisteredMarket(shareMarket).factory() != address(this)
+                || IBudgetRegisteredMarket(shareMarket).timelock() != timelock_
+        ) revert InvalidGovernance();
+        emit ShareMarketRegistered(shareMarket);
+    }
+
+    function _initialize(
+        address owner_,
+        address operator_,
+        address treasury_,
+        address timelock_,
+        address beacon_,
+        address legacyFactory_
+    ) private onlyInitializing {
         if (
             owner_ == address(0) || operator_ == address(0) || treasury_ == address(0) || timelock_.code.length == 0
                 || beacon_.code.length == 0 || legacyFactory_.code.length == 0

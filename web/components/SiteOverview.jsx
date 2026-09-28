@@ -11,7 +11,7 @@ export default function SiteOverview({pools,onExplore,onAccount,onRules,onRecord
  const {t,locale}=useI18n();
  const [motionPaused,setMotionPaused]=useState(false);
  const L=(zh,en)=>locale==='en'?en:zh;
- const stats=live?{projects:liveStats?.registeredPoolCount,participants:liveStats?.everParticipantAddressCount,managed:liveStats?.currentlyActivePoolCount,daily:null}:platformTotals(pools),groups=[['Funding','募集中','一起出资，开启下一台矿机。'],['Active','挖矿中','共同持有，按份额分享产出。'],['Listed','整机出售中','共同决定，让矿机有序流转。']];
+ const stats=live?{projects:liveStats?.topLevelProjectCount ?? liveStats?.registeredPoolCount,participants:liveStats?.everParticipantAddressCount,managed:liveStats?.currentlyActivePoolCount,daily:null}:platformTotals(pools),groups=[['Funding','募集中','一起出资，开启下一台矿机。'],['Active','挖矿中','共同持有，按份额分享产出。'],['Listed','整机出售中','共同决定，让矿机有序流转。']];
  return <div className="bemine-home">
   <section className={`bemine-hero${motionPaused?' motion-paused':''}`}>
    <HeroScene/><div className="bemine-hero-shade"/>
