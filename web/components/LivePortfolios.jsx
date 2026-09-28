@@ -11,6 +11,9 @@ import LiveYieldChart from './LiveYieldChart';
 import { sameUnsignedIntent } from '../lib/ui-context.mjs';
 import './LivePortfolios.css';
 import { portfolioText } from '../lib/portfolio-copy.mjs';
+import { portfolioCreateForm } from '../lib/portfolio-create-form.mjs';
+import { fetchCapacityReference, referenceIssue } from '../../deploy/src/pricing.ts';
+import { QUOTE_BASE } from '../lib/operator-quotes.mjs';
 import PortfolioCapacity from './PortfolioCapacity';
 import BudgetPurchaseQueue from './BudgetPurchaseQueue';
 
@@ -32,6 +35,7 @@ export default function LivePortfolios({ config, provider, client, locale, accou
   const [listingQuantity,setListingQuantity]=useState('1');
   const [quantity,setQuantity]=useState('1'),[recipient,setRecipient]=useState(''),[child,setChild]=useState(''),[price,setPrice]=useState(''),[reference,setReference]=useState('');
   const [budget,setBudget]=useState(''),[cap,setCap]=useState(''),[unitCap,setUnitCap]=useState(''),[fundHours,setFundHours]=useState('24'),[buyHours,setBuyHours]=useState('48');
+  const [dailyReference,setDailyReference]=useState(null),[dailyReferenceError,setDailyReferenceError]=useState('');
   const context=useRef({}), sequence=useRef(0);
   const identity=`${config?.portfolioFactory || ''}:${account || ''}:${mode}:${initialPool || ''}:${refreshKey}`;
   if(context.current.identity!==identity || context.current.provider!==provider || context.current.wallet!==wallet){
@@ -47,6 +51,13 @@ export default function LivePortfolios({ config, provider, client, locale, accou
   useEffect(()=>{setListingQuantity(selectedCurrent?.availableShares>0n?selectedCurrent.availableShares.toString():'1');setPrice('');},[selectedCurrent?.pool,selectedCurrent?.availableShares]);
   useEffect(()=>{setLoadedIdentity('');setOrders([]);setOrderPool(null);setOrderCursor(null);setRows([]);setSelected(null);setPreview(null);setError('');setReadRetry(null);setReadFailed(false);setOperator(null);setCursor(null);setBusy(false);setLoading(false);if(enabled && (!mine || account))void load();},[identity,provider,wallet]);
   useEffect(()=>()=>{sequence.current++;},[]);
+  useEffect(()=>{
+    if(mode!=='operator'||!enabled)return;
+    let active=true;
+    void fetchCapacityReference({baseUrl:QUOTE_BASE}).then(value=>{if(active){setDailyReference(value);setDailyReferenceError('');}})
+      .catch(problem=>{if(active){setDailyReference(null);setDailyReferenceError(brief(problem));}});
+    return ()=>{active=false;};
+  },[mode,enabled,config?.portfolioFactory]);
 
   function retryRead(read,ticket){return retryReadRound(read,{isCurrent:()=>current(ticket),
     onAttempt:progress=>{if(current(ticket)){setReadFailed(false);setReadRetry(progress.attempt>1?progress:null);}},
@@ -111,12 +122,15 @@ export default function LivePortfolios({ config, provider, client, locale, accou
     {!enabled ? <p role="status">{T("预算项目合约尚未完成部署验收。")}</p> : mine&&!account ? <button className="btn" onClick={onConnect}>{T("连接钱包查看项目权益")}</button> : <>
       {error&&<div className="portfolio-error" role="alert"><p>{T(error)}</p>{readFailed&&<button className="btn secondary" disabled={frozen} onClick={()=>void load()}>{locale==='en'?'Retry portfolio data':'重新读取预算项目'}</button>}</div>}
       {loading&&<p role="status">{readRetry?(locale==='en'?`Portfolio data is temporarily unavailable. Retrying automatically (${readRetry.attempt}/${readRetry.maxAttempts})…`:`预算数据暂时未就绪，正在自动重试（${readRetry.attempt}/${readRetry.maxAttempts}）…`):T("正在核对预算项目…")}</p>}
-      {mode==='operator'&&isOperator&&<section id="multi-miner-create" className="portfolio-create"><h3>{T("创建多矿机预算项目")}</h3><p>{T("预算项目固定 100 份；总预算、单机绝对上限和单位算力价格上限写入合约，采购不能突破上限。")}</p><p>{T("先创建共享 100 份的预算项目；募满后在项目中设置本批最多采购台数（1–20 台），从当前合格挂单逐台核验并买入。矿机可能在募集期间售出，因此创建时不锁定具体编号；同一项目可用剩余预算继续采购下一批。")}</p><div className="portfolio-actions"><label>{T("募集预算（BNB）")}<input inputMode="decimal" placeholder="0.005" value={budget} onChange={e=>setBudget(e.target.value)}/></label><label>{T("单机价格上限（BNB）")}<input inputMode="decimal" value={cap} onChange={e=>setCap(e.target.value)}/></label><label>{T("每单位核验算力上限（BNB）")}<input inputMode="decimal" value={unitCap} onChange={e=>setUnitCap(e.target.value)}/></label><label>{T("募集期（小时）")}<input inputMode="numeric" value={fundHours} onChange={e=>setFundHours(e.target.value)}/></label><label>{T("募集结束后购机期（小时）")}<input inputMode="numeric" value={buyHours} onChange={e=>setBuyHours(e.target.value)}/></label><button className="btn" disabled={frozen} onClick={()=>{
-        if(!/^[1-9]\d{0,2}$/.test(fundHours)||!/^[1-9]\d{0,2}$/.test(buyHours)){setError('请输入整数小时。');return;}
-        const now=BigInt(Math.floor(Date.now()/1000)),fundingDeadline=now+BigInt(fundHours)*3600n;
-        let rounded;try{rounded=fundingAmount(budget).rounded;setBudget(rounded);}catch(problem){setError(brief(problem));return;}
-        void prepare({kind:'createPortfolio',budget:rounded,absoluteCap:cap,unitCap,fundingDeadline:fundingDeadline.toString(),purchaseDeadline:(fundingDeadline+BigInt(buyHours)*3600n).toString()},null);
-      }}>{T("预览创建预算项目")} <ArrowRight size={15}/></button></div></section>}
+      {mode==='operator'&&isOperator&&<section id="multi-miner-create" className="portfolio-create"><h3>{T("创建多矿机预算项目")}</h3><p>{T("预算项目固定 100 份；总预算、单机绝对上限和单位算力价格上限写入合约，采购不能突破上限。")}</p><p>{T("先创建共享 100 份的预算项目；募满后在项目中设置本批最多采购台数（1–20 台），从当前合格挂单逐台核验并买入。矿机可能在募集期间售出，因此创建时不锁定具体编号；同一项目可用剩余预算继续采购下一批。")}</p>
+        <p>{T('Firsto 市场参考日产能价')}: <strong>{dailyReference&&!referenceIssue(dailyReference)?`${amount(dailyReference.dailyCapacityPriceWei,18,5)} BNB / (BEM / 天)`:'—'}</strong>{dailyReference&&!referenceIssue(dailyReference)?` · ${new Date(dailyReference.observedAt).toLocaleString(locale==='en'?'en-GB':'zh-CN')}`:dailyReferenceError?` · ${dailyReferenceError}`:''}</p>
+        <p>{T('日产能价用于比较报价；当前已部署合约按每 H 价格限制购机，不能把日产能价直接填入链上上限。')}</p>
+        <div className="portfolio-actions"><label>{T("募集预算（BNB）")}<input inputMode="decimal" placeholder="0.005" value={budget} onChange={e=>setBudget(e.target.value)}/></label><label>{T("单机价格上限（BNB）")}<input inputMode="decimal" value={cap} onChange={e=>setCap(e.target.value)}/></label><label>{T("链上每 H 价格上限（BNB / H）")}<input inputMode="decimal" value={unitCap} onChange={e=>setUnitCap(e.target.value)}/></label><label>{T("募集期（小时）")}<input inputMode="numeric" value={fundHours} onChange={e=>setFundHours(e.target.value)}/></label><label>{T("募集结束后购机期（小时）")}<input inputMode="numeric" value={buyHours} onChange={e=>setBuyHours(e.target.value)}/></label><button className="btn" disabled={frozen} onClick={()=>{
+          let fields;try{fields=portfolioCreateForm({budget,absoluteCap:cap,unitCap, fundHours,buyHours});setBudget(fields.budget);}
+          catch(problem){setError(brief(problem));return;}
+          const now=BigInt(Math.floor(Date.now()/1000)),fundingDeadline=now+BigInt(fundHours)*3600n;
+          void prepare({kind:'createPortfolio',budget:fields.budget,absoluteCap:fields.absoluteCap,unitCap:fields.unitCap,fundingDeadline:fundingDeadline.toString(),purchaseDeadline:(fundingDeadline+BigInt(buyHours)*3600n).toString()},null);
+        }}>{T("预览创建预算项目")} <ArrowRight size={15}/></button></div></section>}
       {!loading&&!error&&!visibleRows.length&&<p>{locale==='en'?(mine?'No portfolios related to this wallet.':'No portfolios currently available.'):(mine?'当前没有与你相关的预算项目。':'当前没有预算项目。')}</p>}
       <div className="portfolio-cards">{visibleRows.map(row=><button key={row.pool} className={`portfolio-card${same(selectedCurrent?.pool,row.pool)?' selected':''}`} disabled={frozen} onClick={()=>void select(row)}>
         <strong>{T("预算项目")} {shortAddress(row.pool)}</strong><span>{T(states[Number(row.state)])} · {row.activeChildCount.toString()} {T("台运行 /")} {row.childCount.toString()} {T("台购入")}</span>
@@ -166,7 +180,7 @@ function PortfolioConfirmationDetails({preview,locale}){
   const T=text=>portfolioText(locale,text);
   const a=preview.input.action,row=preview.result.row;
   return <>
-    {a.kind==='createPortfolio'&&<p>{T("募集预算")} {displayDecimal(a.budget)} {T("BNB / 100 份；单机上限")} {displayDecimal(a.absoluteCap)} {T("BNB；每单位核验算力上限")} {displayDecimal(a.unitCap)} {T("BNB。募集截至")} {new Date(Number(a.fundingDeadline)*1000).toLocaleString(locale==='en'?'en-GB':'zh-CN')}{T("，购机截至")} {new Date(Number(a.purchaseDeadline)*1000).toLocaleString(locale==='en'?'en-GB':'zh-CN')}。</p>}
+    {a.kind==='createPortfolio'&&<p>{T("募集预算")} {displayDecimal(a.budget)} {T("BNB / 100 份；单机上限")} {displayDecimal(a.absoluteCap)} {T("BNB；链上每 H 上限")} {displayDecimal(a.unitCap)} {T("BNB / H。募集截至")} {new Date(Number(a.fundingDeadline)*1000).toLocaleString(locale==='en'?'en-GB':'zh-CN')}{T("，购机截至")} {new Date(Number(a.purchaseDeadline)*1000).toLocaleString(locale==='en'?'en-GB':'zh-CN')}。</p>}
     {a.kind==='deposit'&&<p>{T("认购")} {a.quantity} {T("/ 100 份。")}</p>}
     {a.kind==='marketList'&&<p>{T("挂卖")} {a.quantity} {T("份，每份")} {displayDecimal(a.price)} {T("BNB；买卖双方各收成交价的 1%。")}</p>}
     {a.orderId&&<p>{T("份额订单 #")}{a.orderId}{a.quantity?` · ${a.quantity} ${T('份')}`:''}。</p>}

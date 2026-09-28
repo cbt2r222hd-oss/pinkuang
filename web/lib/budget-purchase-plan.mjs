@@ -1,4 +1,6 @@
-import { ZeroAddress, getAddress, keccak256, toUtf8Bytes } from 'ethers';
+import { ZeroAddress, getAddress } from 'ethers';
+import { BUDGET_QUEUE_VERSION, budgetApprovalDigest, validateBudgetQueue } from '../../deploy/shared/budget-queue.mjs';
+export { BUDGET_QUEUE_VERSION, validateBudgetQueue } from '../../deploy/shared/budget-queue.mjs';
 import { abi, uint } from './chain-client.mjs';
 import { readPortfolioContext, readPortfolio, preparePortfolioAction } from './live-portfolios.mjs';
 import { prepareAdminAction } from './live-admin.mjs';
@@ -12,42 +14,10 @@ const need=(value,message)=>{if(!value)throw new Error(message);};
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&a.toLowerCase()===b.toLowerCase();
 const addr=value=>{const a=getAddress(value);need(a!==ZeroAddress,'Invalid zero address / 地址无效');return a;};
 const exact=value=>uint(value);
-const hash=value=>keccak256(toUtf8Bytes(JSON.stringify(value)));
 const clone=value=>JSON.parse(JSON.stringify(value));
 const roundShares=value=>(exact(value)+99n)/100n*100n;
 const key=row=>`${row.collection.toLowerCase()}:${row.tokenId}`;
-const failText='项目、钱包或网络已变化，请重新读取 / Project, account or network changed. Reload.';
-export const BUDGET_QUEUE_VERSION=1;
 export const BUDGET_FIRSTO_PAGE_LIMIT=5;
-
-export function validateBudgetQueue(plan, {config,account,parent}={}) {
-  need(plan?.version===BUDGET_QUEUE_VERSION && plan.chainId===56 && /^0x[\da-f]{64}$/i.test(plan.artifactDigest??''),failText);
-  [plan.account,plan.parent,plan.factory,plan.portfolioFactory].forEach(addr);
-  if(config)need(config.kind==='integrated-v2' && same(plan.factory,config.factory) && same(plan.portfolioFactory,config.portfolioFactory)
-    && same(plan.artifactDigest,config.artifactDigest??config.manifest?.artifactDigest),failText);
-  if(account)need(same(plan.account,account),failText);if(parent)need(same(plan.parent,parent),failText);
-  need(Array.isArray(plan.items)&&plan.items.length>0&&plan.items.length<=20&&Number.isSafeInteger(plan.revision)&&plan.revision>=0,'Invalid purchase queue');
-  need(exact(plan.limitWei)>0n && exact(plan.startSpentWei)+exact(plan.limitWei)<=exact(plan.budgetWei),'Queue exceeds project budget');
-  const seen=new Set();let total=0n;
-  for(const item of plan.items){
-    addr(item.collection);need(!seen.has(key(item)),'Duplicate NFT in purchase queue');seen.add(key(item));
-    const cost=exact(item.maxCostWei),weight=exact(item.verifiedWeight),cap=exact(plan.absoluteCapWei)<exact(plan.unitCapWei)*weight?exact(plan.absoluteCapWei):exact(plan.unitCapWei)*weight;
-    need(weight>0n&&cost>0n&&cost<=cap&&exact(item.targetRaiseWei)===roundShares(cost),'Candidate exceeds approved cap');
-    need(['official','firsto'].includes(item.venue)&&['ready','creating','created','buying','pending','completed','failed','skipped'].includes(item.status),'Invalid queue state');
-    if(item.child)addr(item.child);
-    if(item.hash)need(/^0x[\da-f]{64}$/i.test(item.hash),'Invalid queue transaction hash');
-    total+=cost;
-  }
-  need(total<=exact(plan.limitWei),'Queue candidates exceed approved budget');
-  need(plan.approvalDigest===approvalDigest(plan),'Purchase approval changed; preview again');
-  return plan;
-}
-
-function approvalDigest(plan){return hash({version:plan.version,chainId:plan.chainId,account:plan.account,parent:plan.parent,factory:plan.factory,
-  portfolioFactory:plan.portfolioFactory,artifactDigest:plan.artifactDigest,budgetWei:plan.budgetWei,startSpentWei:plan.startSpentWei,
-  limitWei:plan.limitWei,absoluteCapWei:plan.absoluteCapWei,unitCapWei:plan.unitCapWei,purchaseDeadline:plan.purchaseDeadline,
-  items:plan.items.map(({collection,tokenId,maxCostWei,targetRaiseWei,verifiedWeight,venue,listingId,encodedOrder})=>
-    ({collection,tokenId,maxCostWei,targetRaiseWei,verifiedWeight,venue,listingId,encodedOrder}))});}
 
 /** No display rounding enters approval or calldata. The temporary deposit needs 100 equal integer shares. */
 export function selectBudgetCandidates(rows,{remainingWei,limitWei,maxMachines=5}={}){
@@ -135,19 +105,10 @@ export async function discoverBudgetPurchasePlan({config,provider,account,parent
     items:selected.map(candidate=>({collection:addr(candidate.collection),tokenId:exact(candidate.tokenId).toString(),maxCostWei:candidate.maxCostWei,
       targetRaiseWei:candidate.targetRaiseWei,verifiedWeight:exact(candidate.verifiedWeight).toString(),venue:candidate.venue,
       ...(candidate.listingId?{listingId:String(candidate.listingId)}:{}),...(candidate.encodedOrder?{encodedOrder:candidate.encodedOrder}:{}),status:'ready'}))};
-  plan.approvalDigest=approvalDigest(plan);return validateBudgetQueue(plan,{config,account,parent});
+  plan.approvalDigest=budgetApprovalDigest(plan);return validateBudgetQueue(plan,{config,account,parent});
 }
 
 export function nextBudgetQueueItem(plan){validateBudgetQueue(plan);return plan.items.findIndex(item=>!['completed','failed','skipped'].includes(item.status));}
-export function budgetQueueStorageKey({config,account,parent}){return `bemine-budget-queue:v1:56:${addr(account).toLowerCase()}:${addr(parent).toLowerCase()}:${config.artifactDigest??config.manifest?.artifactDigest}`;}
-export function saveBudgetQueue(storage,plan,{expectedRevision}={}){
-  validateBudgetQueue(plan);const key=budgetQueueStorageKey({config:{artifactDigest:plan.artifactDigest},account:plan.account,parent:plan.parent});
-  const previous=storage.getItem(key);
-  if(expectedRevision!==undefined){const old=previous?JSON.parse(previous):null;need(old?.id===plan.id&&old?.revision===expectedRevision,'队列已被其他页面更新 / Queue changed in another tab');}
-  else if(previous){const old=validateBudgetQueue(JSON.parse(previous));need(nextBudgetQueueItem(old)<0,'已有采购队列尚未完成 / Another queue is still active');}
-  const text=JSON.stringify(plan);storage.setItem(key,text);need(storage.getItem(key)===text,'无法可靠保存采购队列 / Cannot persist purchase queue');return plan;
-}
-export function loadBudgetQueue(storage,identity){const raw=storage.getItem(budgetQueueStorageKey(identity));return raw?validateBudgetQueue(JSON.parse(raw),identity):null;}
 
 /** Fresh parent/NFT/unique registration verification precedes every explicit wallet step. */
 export async function prepareBudgetQueueStep({config,provider,account,parent,plan,index,readParent=freshParent,
@@ -233,7 +194,9 @@ export function applyBudgetQueueResult(plan,index,result){
     &&same(result.receipt.transactionHash,result.hash??result.transactionHash)
     &&[0,1].includes(result.receipt.status)&&(result.status==='replaced'||result.receipt.status===(result.status==='reverted'?0:1)),
     'Receipt identity or status differs from the approved step');
-  item.hash=result.hash??result.transactionHash;item.lastResult={status:result.status,hash:item.hash,nonce:result.nonce};
+  const finalizedHash=result.hash??result.transactionHash;
+  if(item.hash&&!same(item.hash,finalizedHash))item.previousHashes=[...(item.previousHashes??[]),item.hash];
+  item.hash=finalizedHash;item.lastResult={status:result.status,hash:item.hash,nonce:result.nonce};
   if(result.status==='confirmed'){
     if(item.pendingPhase==='create'){item.child=addr(result.poolAddress);item.creationHash=item.hash;item.status='created';}
     else{item.purchaseHash=item.hash;item.status='completed';}

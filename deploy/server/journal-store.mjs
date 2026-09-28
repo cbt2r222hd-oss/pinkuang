@@ -33,6 +33,8 @@ export class JournalStore {
       CREATE TABLE IF NOT EXISTS market_signing (account TEXT PRIMARY KEY, intent_key TEXT NOT NULL, armed_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS market_results (account TEXT NOT NULL, hash TEXT NOT NULL, result TEXT NOT NULL,
         PRIMARY KEY(account,hash));
+      CREATE TABLE IF NOT EXISTS budget_queues (account TEXT NOT NULL, parent TEXT NOT NULL, revision INTEGER NOT NULL,
+        record TEXT NOT NULL, PRIMARY KEY(account,parent));
       CREATE TABLE IF NOT EXISTS quotes (id TEXT PRIMARY KEY, account TEXT NOT NULL, record TEXT NOT NULL, created_at INTEGER NOT NULL);`);
   }
 
@@ -148,6 +150,22 @@ export class JournalStore {
     const row = this.db.prepare('SELECT revision,record FROM market WHERE account=?').get(account);
     return { record: read(row?.record ?? null), revision: row?.revision ?? 0 };
   }
+  budgetQueue(account, parent) {
+    const row = this.db.prepare('SELECT revision,record FROM budget_queues WHERE account=? AND parent=?').get(account, parent);
+    return { revision: row?.revision ?? 0, record: read(row?.record ?? null) };
+  }
+  putBudgetQueue(account, parent, record, expectedRevision) {
+    return this.transaction(() => {
+      const current = this.budgetQueue(account, parent);
+      if (current.revision !== expectedRevision) throw new JournalConflict('Purchase queue changed in another session. Reload it before sending.');
+      if (current.record) validateBudgetQueueProgress(current.record, record);
+      const next = current.revision + 1;
+      this.db.prepare(`INSERT INTO budget_queues(account,parent,revision,record) VALUES(?,?,?,?)
+        ON CONFLICT(account,parent) DO UPDATE SET revision=excluded.revision,record=excluded.record`)
+        .run(account, parent, next, canonical(record));
+      return next;
+    });
+  }
   marketResult(account, hash) {
     const row = this.db.prepare('SELECT result FROM market_results WHERE account=? AND hash=?').get(account, hash.toLowerCase());
     return read(row?.result ?? null);
@@ -229,6 +247,41 @@ export class JournalStore {
       .all(account, limit + 1, cursor);
     return { items: rows.slice(0, limit).map(row => ({ id: row.id, record: read(row.record), createdAt: row.created_at })),
       nextCursor: rows.length > limit ? cursor + limit : null };
+  }
+}
+
+function validateBudgetQueueProgress(previous, next) {
+  const terminal = item => ['completed','failed','skipped'].includes(item.status);
+  if (previous.id !== next.id) {
+    if (previous.items.some(item => !terminal(item))) throw new JournalConflict('An unresolved purchase queue cannot be replaced.');
+    return;
+  }
+  if (next.revision !== previous.revision + 1 || previous.approvalDigest !== next.approvalDigest
+    || previous.items.length !== next.items.length || previous.approved !== next.approved)
+    throw new JournalConflict('Purchase queue identity or revision changed.');
+  const allowed = {
+    ready: ['ready','creating','skipped'], creating: ['creating','pending','created','failed','ready'],
+    pending: ['pending','created','completed','failed'], created: ['created','buying','skipped'],
+    buying: ['buying','pending','completed','failed','created'],
+    completed: ['completed'], failed: ['failed'], skipped: ['skipped'],
+  };
+  for (let i = 0; i < previous.items.length; i++) {
+    const old = previous.items[i], item = next.items[i];
+    if (!allowed[old.status]?.includes(item.status)) throw new JournalConflict('Purchase step cannot regress.');
+    if (old.child && old.child.toLowerCase() !== item.child?.toLowerCase())
+      throw new JournalConflict('Confirmed child pool cannot change.');
+    if (old.hash && old.hash.toLowerCase() !== item.hash?.toLowerCase()
+      && !(item.status === 'failed' && ['replaced','cancelled'].includes(item.lastResult?.status)
+        && item.previousHashes?.some(hash => hash.toLowerCase() === old.hash.toLowerCase())))
+      throw new JournalConflict('Transaction hash cannot be erased.');
+    if (old.nonce !== undefined && old.nonce !== item.nonce)
+      throw new JournalConflict('Transaction nonce cannot change.');
+    if (old.intent && !terminal(item) && item.status !== 'created' && item.status !== 'ready'
+      && !same(old.intent, item.intent)) throw new JournalConflict('Purchase intent cannot change.');
+    if (old.status === 'creating' && item.status === 'ready' || old.status === 'buying' && item.status === 'created') {
+      if (old.hash || old.nonce !== undefined || item.hash || item.nonce !== undefined)
+        throw new JournalConflict('A submitted transaction cannot be reset.');
+    }
   }
 }
 

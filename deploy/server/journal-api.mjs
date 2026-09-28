@@ -10,6 +10,7 @@ import { fetchOfficialCandidates } from '../scripts/official-market-discovery.mj
 import { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI, verifyPortfolioIntent } from './portfolio-intent.mjs';
 import { verifyControlledFirstoSale } from './firsto-sale-preflight.mjs';
 import { readBudgetCandidates } from './budget-candidates.mjs';
+import { validateBudgetQueue } from '../shared/budget-queue.mjs';
 import { legacyFactoryConfiguration, verifyCreationCutover } from './creation-cutover.mjs';
 export { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI } from './portfolio-intent.mjs';
 
@@ -1101,6 +1102,23 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
       }
       if (method === 'GET' && path === '/api/journal/session') return send(200, { account });
       if (method === 'GET' && path === '/api/journal/build') return send(200, { artifactDigest: signingBuildDigest() });
+      if (path === '/api/journal/budget-queue' && ['GET','PUT'].includes(method)) {
+        if (!expectedAccount) fail(400, 'The selected wallet is required.');
+        const url = new URL(req.url, origin);
+        if ([...url.searchParams.keys()].some(key => key !== 'parent') || url.searchParams.getAll('parent').length !== 1)
+          fail(400, 'Exactly one budget parent is required.');
+        const parent = identity(url.searchParams.get('parent'));
+        if (method === 'GET') return send(200, store.budgetQueue(account, parent));
+        const body = await readJson(req);
+        const record = body.record;
+        try { validateBudgetQueue(record, { account, parent }); }
+        catch { fail(400, 'Invalid purchase queue or wallet identity.'); }
+        if (record.approved !== true || identity(record.portfolioFactory) !== identity(trustedProduct?.record?.addresses?.portfolioFactory)
+          || identity(record.factory) !== identity(trustedProduct?.record?.addresses?.factory)
+          || record.artifactDigest.toLowerCase() !== trustedProduct.record.artifactDigest.toLowerCase())
+          fail(409, 'Purchase queue does not match the reviewed deployment.');
+        return send(200, { revision: store.putBudgetQueue(account, parent, record, exactRevision(body.expectedRevision)) });
+      }
       if (method === 'GET' && path === '/api/journal/deployment') return send(200, store.deployment(account));
       if (method === 'GET' && path === '/api/journal/deployment/nonce') {
         if (new URL(req.url, origin).search) fail(400, 'Nonce verification accepts only the authenticated wallet, with no query parameters.');

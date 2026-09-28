@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -8,7 +8,7 @@ import { packageRelease } from './package-release.mjs';
 import { servedArtifactDigest } from '../server/artifact-digest.mjs';
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'pinkuang-package-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'pinkuang-package-')));
   const deployDir = join(root, 'source', 'deploy'), outDir = join(root, 'release'), sourceHead = 'a'.repeat(40);
   const write = (name, body) => { const path = join(deployDir, name); mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, body); };
   const bundle = JSON.stringify({ sourceCommit: sourceHead, artifacts: { FirstoSale: {}, AtomicDeployment: {}, BudgetPortfolioFactory: {}, BudgetPortfolioVault: {} } });

@@ -1,0 +1,24 @@
+import { parseEther } from 'ethers';
+import { fundingAmount } from './funding-amount.mjs';
+
+function positiveBnb(value,label){
+  if(typeof value!=='string'||!/^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/.test(value.trim()))
+    throw new Error(`${label}请输入精确 BNB 金额，最多 18 位小数。`);
+  const wei=parseEther(value.trim());
+  if(wei<=0n)throw new Error(`${label}必须大于 0 BNB。`);
+  return wei;
+}
+
+/** UI validation only; the contract independently enforces wei-denominated caps. */
+export function portfolioCreateForm({budget,absoluteCap,unitCap,fundHours,buyHours}){
+  const total=positiveBnb(budget,'募集预算');
+  const perMiner=positiveBnb(absoluteCap,'单机价格上限');
+  positiveBnb(unitCap,'链上每 H 价格上限');
+  if(perMiner>total)throw new Error('单机价格上限不能超过募集预算。');
+  if(!/^[1-9]\d{0,2}$/.test(fundHours)||!/^[1-9]\d{0,2}$/.test(buyHours))
+    throw new Error('募集期与购机期请输入 1–999 的整数小时。');
+  const rounded=fundingAmount(budget).rounded;
+  if(parseEther(rounded)===0n)throw new Error('募集预算按 0.001 BNB 展示后为 0，请提高预算。');
+  if(perMiner>parseEther(rounded))throw new Error('单机价格上限不能超过最终募集预算。');
+  return {budget:rounded,absoluteCap,unitCap,fundHours,buyHours};
+}

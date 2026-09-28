@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ZeroAddress, getAddress } from 'ethers';
 import { selectBudgetCandidates,discoverBudgetPurchasePlan,validateBudgetQueue,prepareBudgetQueueStep,beginBudgetQueueStep,
-  applyBudgetQueueResult,nextBudgetQueueItem,saveBudgetQueue,loadBudgetQueue,budgetQueuePreviewMatches,reconcileBudgetQueue,
+  applyBudgetQueueResult,nextBudgetQueueItem,budgetQueuePreviewMatches,reconcileBudgetQueue,
   restoreBudgetQueueBeforeSubmission } from '../lib/budget-purchase-plan.mjs';
 import { parseFirstoSignedAsk } from '../../deploy/src/firsto-purchase.mjs';
 import { signedSource,now as sourceNow } from '../../deploy/scripts/fixtures/firsto-order.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { JournalStore, JournalConflict } from '../../deploy/server/journal-store.mjs';
 const address=n=>getAddress(`0x${n.toString(16).padStart(40,'0')}`),H=`0x${'a'.repeat(64)}`,D=`0x${'d'.repeat(64)}`;
 const C=getAddress('0xb1024b89886b9a34aa4ff5f31c411d708b20a14c'),account=address(1),parent=address(2),factory=address(3),portfolioFactory=address(4),child=address(5);
 const config={kind:'integrated-v2',factory,portfolioFactory,artifactDigest:D};
@@ -113,13 +117,28 @@ test('created child is checked empty and exact before parent purchase; purchase 
   assert(!budgetQueuePreviewMatches(preview,{...preview,procurement:{route:'official',priceWei:201n}}));
 });
 
-test('queue storage checks account identity, read-back and revision conflicts; unresolved queue cannot be overwritten',async()=>{
-  const f=fixture(),plan={...await f.discover(),approved:true},map=new Map(),storage={getItem:key=>map.get(key)??null,setItem:(key,value)=>map.set(key,value)};
-  saveBudgetQueue(storage,plan);assert.equal(loadBudgetQueue(storage,{config,account,parent}).id,plan.id);
-  assert.throws(()=>saveBudgetQueue(storage,plan),/still active/);
-  assert.throws(()=>saveBudgetQueue(storage,{...plan,revision:2},{expectedRevision:1}),/another tab/);
-  const next={...plan,revision:1};saveBudgetQueue(storage,next,{expectedRevision:0});
-  assert.throws(()=>saveBudgetQueue({getItem:()=>null,setItem:()=>{}},plan),/persist/);
+test('server queue survives restart, rejects stale revisions and preserves unresolved wallet steps',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'bemine-budget-queue-')),path=join(directory,'private','journal.sqlite');
+  try{
+    const f=fixture(),plan={...await f.discover(),approved:true};
+    let store=new JournalStore(path);
+    assert.deepEqual(store.budgetQueue(account.toLowerCase(),parent.toLowerCase()),{revision:0,record:null});
+    assert.equal(store.putBudgetQueue(account.toLowerCase(),parent.toLowerCase(),plan,0),1);
+    store.close();store=new JournalStore(path);
+    assert.equal(store.budgetQueue(account.toLowerCase(),parent.toLowerCase()).record.id,plan.id);
+    assert.throws(()=>store.putBudgetQueue(account.toLowerCase(),parent.toLowerCase(),plan,0),JournalConflict);
+    const prepared=await prepareBudgetQueueStep({config,provider:{},account,parent,plan,index:0,readParent:f.readParent,
+      readMiner:f.readMiner,prepareCreate:f.prepareCreate});
+    const begun=beginBudgetQueueStep(plan,prepared);
+    assert.equal(store.putBudgetQueue(account.toLowerCase(),parent.toLowerCase(),begun,1),2);
+    const other={...await f.discover(),approved:true};
+    assert.throws(()=>store.putBudgetQueue(account.toLowerCase(),parent.toLowerCase(),other,2),JournalConflict);
+    const pending=applyBudgetQueueResult(begun,0,{status:'pending',hash:H});
+    assert.equal(store.putBudgetQueue(account.toLowerCase(),parent.toLowerCase(),pending,2),3);
+    const erased=structuredClone(pending);delete erased.items[0].hash;erased.revision++;
+    assert.throws(()=>store.putBudgetQueue(account.toLowerCase(),parent.toLowerCase(),erased,3),JournalConflict);
+    store.close();
+  }finally{await rm(directory,{recursive:true,force:true});}
 });
 
 test('a proven failure before entering the send routine restores the previous step with a new CAS revision',async()=>{
