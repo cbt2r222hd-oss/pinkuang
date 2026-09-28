@@ -11,5 +11,5 @@
 只读验收示例：
 
 ```sh
-node scripts/purchase-supervisor.mjs --factory 0x2995B10d19056c8C24C57b281C22562a603C571F --rpc https://bsc-rpc.publicnode.com --once
+node scripts/purchase-supervisor.mjs --factory 0x2995B10d19056c8C24C57b281C22562a603C571F --rpc https://bsc-dataseed.bnbchain.org --once
 ```
