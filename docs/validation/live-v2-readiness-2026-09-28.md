@@ -6,7 +6,7 @@
 
 | 范围 | 结果与证据 |
 | --- | --- |
-| 整合源码 | `codex/contracts-v2-integration@c90c255`，PR [#29](https://github.com/jianfengliao774-sketch/pinkuang/pull/29) 仍为 draft、base 为 `codex/auto-mining-keeper`。主仓 `main@537100f` 是初始化空树，尚未整合；现有旧 PR 为历史堆叠。 |
+| 整合源码 | 核对时为 `codex/contracts-v2-integration@c90c255`，本报告随后以 `6c86e5a` 推送。PR [#29](https://github.com/jianfengliao774-sketch/pinkuang/pull/29) 保持 draft，已改为直接面向 `main` 的完整整合审阅入口。主仓 `main@537100f` 仍是初始化空树，尚未合并；现有旧 PR 为历史堆叠。 |
 | 两仓来源 | 再次抓取主仓和协作仓所有远端 head；整合分支以外的四条非祖先分支仍为 `formal-market-test`、`telegram-notifications`、`bemine-live-share`、`bemine-design-v7`，与[来源清单](../history/integration-source-inventory-2026-09-28.md)相同，没有发现新的分支提交。其独有功能按统一交接逐项吸收或保留历史；不能直接把旧分支整体合入。 |
 | 合约代码 | BSC 块 `124466199` 读取公开清单列出的十个合约地址；十项运行代码哈希均匹配清单。Factory/两个 ShareMarket/PortfolioFactory 的代理实现槽及两个 Beacon 的实现、owner 可读；Beacon owner 均为清单中的 Timelock。 |
 | 当前工厂 | BSC 块 `124466222`：新 Factory `poolCount=0`、`creationPaused=false`、矿机登记 `initialized=true,ready=true`，BudgetPortfolioFactory `portfolioCount=0`、`creationPaused=false`，回指新 Factory、份额市场地址均匹配清单。旧 Factory `0xcB24E7F96D81037086A268d6ea63c53f91D412A2` 仍是 `poolCount=0`、**`creationPaused=false`**。 |
@@ -22,6 +22,6 @@
 3. **Firsto 原生页面挂单尚未交付。** 当前合约的 `completeFirstoSale` 在本站同笔先严格领取 BEM，再由一次性执行器调用 Firsto V2 成交；它不在 Firsto 网站发布长期可见的卖单。原生直购不会自动领取 BEM，不能绕开严格结清。若产品仍要求 Firsto 网站原生挂单，需单独设计、审计并升级合约；不把本站受控成交标为原生挂单。
 4. **无人值守多机最优采购尚未交付。** 当前有固定预算、官网优先的持久分步采购队列，但统一交接明确 Firsto 全量多机发现和持久无人值守预算执行器仍未实现。用户可测试现有手动确认路径，不能声称已自动买遍市场最低价矿机。
 5. **可选服务未开放。** WalletConnect 真机扫码缺公开 Project ID/真实配对验收；通知 bot、无人值守 keeper、质押和质保均非本次主网小额测试的已启用功能。
-6. **仓库合并尚未完成。** PR #29 仍是 draft 且叠在 PR #28 上，`main` 仍为空树。主网测试使用整合分支/已核验清单；完成钱包验收和处理上述产品差异后，再把单一整合 PR 作为主线合并，不能逐条旧 PR 盲目叠加部署版本。
+6. **仓库合并尚未完成。** PR #29 已直接面向 `main`，但仍是 draft；`main` 仍为空树。主网测试使用整合分支/已核验清单；完成钱包验收和处理上述产品差异后，再审阅合并这一个整合 PR，不能逐条旧 PR 盲目叠加部署版本。
 
 线上页面和链上状态会变化；每次真实签名前重读具体矿机、报价、合约实现/费率、旧工厂停建状态、索引完整性和钱包地址。本文件中的区块/HTTP 结果只代表上述核对时点。
