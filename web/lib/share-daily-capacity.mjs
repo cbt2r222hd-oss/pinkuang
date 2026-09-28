@@ -33,6 +33,7 @@ export function shareDailyCapacityPriceWei(pricePerUnitWei, estimated24hAtomic) 
  */
 export async function readShareDailyCapacityPrice(provider, {
   factory: factoryInput, pool: poolInput, pricePerUnitWei,
+  allowUnownedTarget = false,
   blockNumber, now = Date.now(), quoteLoader = (collection, tokenId) =>
     fetchMineDetail(collection, tokenId, { baseUrl: QUOTE_BASE }),
 } = {}) {
@@ -65,14 +66,14 @@ export async function readShareDailyCapacityPrice(provider, {
     const collection = getAddress(params.circuits), tokenId = uint(params.circuitId).toString();
     if (!OFFICIAL.has(collection.toLowerCase())) return unavailable('unsupported_miner');
     const owner = await call(collection, NFT, 'ownerOf', [tokenId]);
-    if (getAddress(owner) !== pool) return unavailable('miner_not_in_pool');
+    if (getAddress(owner) !== pool && !allowUnownedTarget) return unavailable('miner_not_in_pool');
 
     // The exact Firsto detail endpoint covers pool-owned NFTs even when they
     // have no active sell order or are absent from three pages of text search.
     const detail = await quoteLoader(collection, tokenId);
     const asset = detail?.asset, mining = asset?.mining;
     if (!asset || !mining || getAddress(asset.collection) !== collection ||
-        exactDecimal(asset.tokenId)?.toString() !== tokenId || getAddress(asset.owner) !== pool ||
+        exactDecimal(asset.tokenId)?.toString() !== tokenId || getAddress(asset.owner) !== getAddress(owner) ||
         asset.category !== 'official_mining' || asset.classification !== 'official_mining' ||
         mining.tokenSymbol !== 'BEM' || mining.tokenDecimals !== 8 || mining.status !== 'verified') {
       return unavailable('quote_identity');
@@ -97,6 +98,10 @@ export async function readShareDailyCapacityPrice(provider, {
       miningSourceBlock, observedAt, validUntil: observedAt + MAX_QUOTE_AGE_MS,
       estimated24hAtomic: dailyAtomic, pricePerUnitWei: price,
       priceWeiPerDailyBem: shareDailyCapacityPriceWei(price, dailyAtomic),
+      marketReferencePriceWei: (() => {
+        const value = exactDecimal(asset.listingReference?.dailyCapacityPriceWei);
+        return value !== null && value > 0n ? value : null;
+      })(),
       sourceUrl: FIRSTO_SOURCE,
       basis: 'gross_estimated_output' });
   } catch {

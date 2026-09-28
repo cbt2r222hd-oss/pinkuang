@@ -95,6 +95,16 @@ test('uses the actual replacement NFT and its source block, with no sell order r
   assert(provider.calls.every(call => ['eth_call', 'eth_chainId', 'eth_getBlockByNumber'].includes(call.method)));
 });
 
+test('funding pool may display its exact external target with chain-matched owner and Firsto reference', async () => {
+  const seller = address(12);
+  const result = await input(rpc({ owner: seller }), { allowUnownedTarget: true,
+    quoteLoader: async () => detail({ owner: seller, listingReference: { dailyCapacityPriceWei: '8100000000000000000' } }) });
+  assert.equal(result.available, true);
+  assert.equal(result.marketReferencePriceWei, 8100000000000000000n);
+  assert.deepEqual(await input(rpc({ owner: seller }), { allowUnownedTarget: true,
+    quoteLoader: async () => detail({ owner: address(13) }) }), { available: false, reason: 'quote_identity' });
+});
+
 test('default loader fetches only the bounded exact Firsto detail, never text search pages', async () => {
   const originalFetch = globalThis.fetch, seen = [];
   globalThis.fetch = async (url, init) => { seen.push({ url, init }); return Response.json(detail()); };

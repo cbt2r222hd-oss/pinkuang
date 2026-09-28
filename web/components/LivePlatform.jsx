@@ -65,7 +65,7 @@ import {
 } from "../lib/live-transactions.mjs";
 import { prepareProductAction } from "../lib/live-actions.mjs";
 import { shareListingView } from "../lib/share-listing-view.mjs";
-import { displayDecimal, displayGasFee } from "../lib/amount-display.mjs";
+import { displayDecimal, displayGasFee, displayPreciseAmount } from "../lib/amount-display.mjs";
 import { abi, readPoolSnapshot } from "../lib/chain-client.mjs";
 import {
   amount,
@@ -224,6 +224,8 @@ export default function LivePlatform() {
     [yieldDays, setYieldDays] = useState(30);
   const [loadedRoute, setLoadedRoute] = useState("");
   const [orderCapacity, setOrderCapacity] = useState({});
+  const [poolCapacity, setPoolCapacity] = useState({});
+  const [poolQuoteRevision, setPoolQuoteRevision] = useState(0);
   const [capacityNow, setCapacityNow] = useState(0);
   const [loadedAccount, setLoadedAccount] = useState(null);
   const [operator, setOperator] = useState(null);
@@ -575,6 +577,35 @@ export default function LivePlatform() {
     const timer = setInterval(() => setCapacityNow(Date.now()), 15_000);
     return () => clearInterval(timer);
   }, [route.route]);
+
+  useEffect(() => {
+    if (!['pools', 'detail'].includes(route.route)) return;
+    const timer = setInterval(() => setPoolQuoteRevision(value => value + 1), 120_000);
+    return () => clearInterval(timer);
+  }, [route.route]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPoolCapacity({});
+    if (!client || !config || !['pools', 'detail'].includes(route.route)) return;
+    const rows = route.route === 'detail' ? (detail ? [detail] : []) : pools;
+    if (!rows.length) return;
+    const provider = createReadOnlyHttpProvider(config);
+    let next = 0;
+    const worker = async () => {
+      while (!cancelled && next < rows.length) {
+        const row = rows[next++];
+        if (!row?.trusted || !row.params || row.unitPriceWei === null) continue;
+        const quote = await readShareDailyCapacityPrice(provider, {
+          factory: config.factory, pool: row.pool, pricePerUnitWei: row.unitPriceWei,
+          allowUnownedTarget: ['Funding', 'Funded'].includes(row.status),
+        });
+        if (!cancelled) setPoolCapacity(previous => ({ ...previous, [row.pool.toLowerCase()]: quote }));
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(2, rows.length) }, worker));
+    return () => { cancelled = true; };
+  }, [client, route.route, pools, detail, boot, refresh, poolQuoteRevision]);
 
   useEffect(() => {
     const revision = ++capacityEpoch.current;
@@ -1217,6 +1248,7 @@ export default function LivePlatform() {
             </th>
             <th>{L("每份金额", "Price per share")}</th>
             <th>{L("预计日产 BEM", "Estimated BEM / day")}</th>
+            <th>{L("Firsto 日产能价", "Firsto daily capacity price")}</th>
             <th />
           </tr>
         </thead>
@@ -1241,8 +1273,13 @@ export default function LivePlatform() {
                 {holdings ? (p.shares?.toString() ?? "—") : (p.funded ?? "—")} /
                 100
               </td>
-              <td className="num">{amount(p.unitPriceWei)} BNB</td>
-              <td>—</td>
+              <td className="num">{displayPreciseAmount(p.unitPriceWei)} BNB</td>
+              <td>{poolCapacity[p.pool.toLowerCase()]?.available
+                ? `${displayPreciseAmount(poolCapacity[p.pool.toLowerCase()].estimated24hAtomic, 8)} BEM`
+                : '—'}</td>
+              <td>{poolCapacity[p.pool.toLowerCase()]?.available && poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei !== null
+                ? `${displayPreciseAmount(poolCapacity[p.pool.toLowerCase()].marketReferencePriceWei)} BNB / (BEM/天)`
+                : '—'}</td>
               <td>
                 {holdings && p.shares > 0n && <button className="btn secondary" disabled={loading || busy || !!pending || !shareListingView(p).allowed}
                   onClick={() => openAction('list', p)} aria-label={L(`挂单 ${p.name} #${p.tokenId}`, `List ${p.name} #${p.tokenId}`)}>
@@ -1870,7 +1907,9 @@ export default function LivePlatform() {
                             : L(...statuses[detail.status])}
                         </span>
                         <span>
-                          {L("预计日产", "Estimated daily output")}：— BEM
+                          {L("预计日产", "Estimated daily output")}：{poolCapacity[detail.pool.toLowerCase()]?.available
+                            ? displayPreciseAmount(poolCapacity[detail.pool.toLowerCase()].estimated24hAtomic, 8)
+                            : '—'} BEM
                         </span>
                       </div>
                     </section>
@@ -2062,9 +2101,15 @@ export default function LivePlatform() {
                       )}
                     </h2>
                     <div className="unit-price">
-                      {amount(detail.unitPriceWei)}{" "}
+                      {displayPreciseAmount(detail.unitPriceWei)}{" "}
                       <small>BNB / {L("份", "share")}</small>
                     </div>
+                    <p className="order-rule purchase-explanation">
+                      {L('Firsto 日产能参考价', 'Firsto daily capacity reference')}：{poolCapacity[detail.pool.toLowerCase()]?.available
+                        && poolCapacity[detail.pool.toLowerCase()].marketReferencePriceWei !== null
+                        ? `${displayPreciseAmount(poolCapacity[detail.pool.toLowerCase()].marketReferencePriceWei)} BNB / (BEM/${L('天', 'day')})`
+                        : '—'}
+                    </p>
                     <p className="order-rule purchase-explanation">
                       {L(
                         "每份对应本池 1% 的份额。",

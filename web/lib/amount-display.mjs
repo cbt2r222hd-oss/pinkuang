@@ -10,6 +10,26 @@ export function displayAmount(value, decimals = 18) {
   return `${negative && milli !== 0n ? '-' : ''}${whole}.${(milli % 1000n).toString().padStart(3, '0')}`;
 }
 
+/** Keep small, positive subscription prices visible without changing their wei value. */
+export function displayPreciseAmount(value, decimals = 18, places = 5) {
+  if (value === null || value === undefined) return '—';
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 80 ||
+      !Number.isInteger(places) || places < 1 || places > 18) throw new Error('Invalid display precision');
+  const atomic = BigInt(value);
+  if (atomic < 0n) throw new Error('Invalid positive amount');
+  const scale = 10n ** BigInt(decimals);
+  const whole = atomic / scale;
+  const fraction = atomic % scale;
+  if (fraction === 0n) return `${whole}.${'0'.repeat(places)}`;
+  if (decimals <= places) return `${whole}.${fraction.toString().padStart(decimals, '0').padEnd(places, '0')}`;
+  const unit = 10n ** BigInt(decimals - places);
+  const rounded = (atomic + unit / 2n) / unit;
+  if (rounded === 0n) return `<0.${'0'.repeat(places - 1)}1`;
+  const displayScale = 10n ** BigInt(places);
+  const roundedFraction = rounded % displayScale;
+  return `${rounded / displayScale}.${roundedFraction.toString().padStart(places, '0')}`;
+}
+
 /** Round the maximum payable Gas upward, so a positive cost never displays as zero. */
 export function displayGasFee(wei) {
   const value = BigInt(wei);

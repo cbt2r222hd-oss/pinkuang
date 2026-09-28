@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { displayAmount, displayDecimal, displayGasFee } from '../lib/amount-display.mjs';
+import { displayAmount, displayDecimal, displayGasFee, displayPreciseAmount } from '../lib/amount-display.mjs';
 import { shareListingView } from '../lib/share-listing-view.mjs';
 test('monetary and capacity display rounds exact atoms, including carry and sub-half-unit values',()=>{
   assert.equal(displayAmount(499999999999999n),'0.000');
@@ -26,6 +26,13 @@ test('Gas upper bound uses five decimal places and never hides a positive fee',(
   assert.equal(displayGasFee('123456789000000'),'0.00013');
   assert.equal(displayGasFee('1000000000000000000'),'1.00000');
   assert.throws(()=>displayGasFee('-1'));
+});
+test('five-place pool prices do not render small positive shares as zero',()=>{
+  assert.equal(displayPreciseAmount(444400000000000n),'0.00044');
+  assert.equal(displayPreciseAmount(432000n,8),'0.00432');
+  assert.equal(displayPreciseAmount(8100000000000000000n),'8.10000');
+  assert.equal(displayPreciseAmount(1n),'<0.00001');
+  assert.equal(displayPreciseAmount(null),'—');
 });
 test('listing uses an ordinary holder position and subtracts existing locks; unknown/frozen positions are disabled',()=>{
   const pool={pool:'0x0000000000000000000000000000000000000001',status:'Active',shareTradingAllowed:true,shares:35n,lockedShares:5n,availableShares:30n};
