@@ -519,9 +519,11 @@ export default function LivePlatform() {
       onRetry: progress => { if (current()) setReadRetry(progress); } })
       .then((result) => {
         if (result === READ_CANCELLED || !current()) return;
-        setPools(result.catalog.items.map(viewPool));
-        setPoolCursor(result.catalog.nextCursor);
-        setSource(result.catalog.source);
+        if (result.catalog) {
+          setPools(result.catalog.items.map(viewPool));
+          setPoolCursor(result.catalog.nextCursor);
+          setSource(result.catalog.source);
+        }
         if (result.stats) setStats(result.stats.data);
         if (result.positions) {
           setPositions(result.positions.items.map(viewPool));

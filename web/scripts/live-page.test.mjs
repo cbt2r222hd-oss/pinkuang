@@ -51,11 +51,12 @@ test('route plan preserves public/private filters and only the required branches
     ['market', undefined, 'mine', ['readPools']],
     ['market', undefined, 'all', ['readPools', 'readOrders']],
     ['governance', account, undefined, ['readPools', 'readPositions']],
-    ['operator', account, undefined, ['readPools']],
+    ['operator', account, undefined, []],
   ];
   for (const [route, owner, marketTab, expected] of cases) {
     const f = fixture(); await readPageRound(f.client, { route, account: owner, marketTab });
     assert.deepEqual(f.calls.map(row => row.method), expected, route);
+    if (route === 'operator') continue;
     assert.equal(f.calls[0].options.account, owner || ZeroAddress);
     const orders = f.calls.find(row => row.method === 'readOrders');
     if (orders) assert.deepEqual(orders.options, marketTab === 'mine' ? { seller: owner } : { active: true });
@@ -64,6 +65,13 @@ test('route plan preserves public/private filters and only the required branches
   const f = fixture(); await readPageRound(f.client, { route: { route: 'detail', pool }, account });
   assert.deepEqual(f.calls.map(row => row.method), ['readPools', 'readPool', 'readGovernance', 'readActivity']);
   assert(f.calls.slice(1).every(row => row.options.pool === pool));
+});
+
+test('operator page remains usable when the unrelated public index returns 503', async () => {
+  const f = fixture(async () => { throw new LiveDataError('http_unavailable', 'Index unavailable', { status: 503 }); });
+  assert.deepEqual(await readPageRound(f.client, { route: 'operator', account }), { catalog: null });
+  assert.equal(f.calls.length, 0);
+  await assert.rejects(readPageRound(f.client, { route: 'pools', account }), { code: 'http_unavailable' });
 });
 
 test('every identity, coverage and block/time disagreement rejects the entire round', async () => {

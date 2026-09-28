@@ -23,6 +23,9 @@ export async function readPageRound(client, { route, account, marketTab } = {}) 
   const name = typeof route === 'string' ? route : route?.route;
   const pool = typeof route === 'object' ? route?.pool : undefined;
   const owner = account || undefined;
+  // Operator permissions, quotes and portfolio creation have independent chain reads.
+  // A moving public index must not disable unrelated administrative controls.
+  if (name === 'operator') return { catalog: null };
   const tasks = { catalog: () => client.readPools({ account: owner || ZeroAddress }) };
   if (name === 'home') tasks.stats = () => client.readStats();
   if (owner && ['overview', 'rewards', 'market', 'governance'].includes(name))
