@@ -68,6 +68,7 @@ export default function OperatorQuotePicker({ config, mode, disabled, onApply })
   const registeredPool = selected?.chain.registry?.pool;
   const duplicate = registeredPool && registeredPool !== ZeroAddress;
   const selectedDailyYield = selected?.quote?.estimated24hAtomic ?? capacityHint?.estimated24hAtomic;
+  const selectedYieldObservedAt = selected?.quote?.source?.observedAt ?? capacityHint?.observedAt;
   const selectedAskPrice = selected?.chain.official?.priceWei ?? selected?.chain.firsto?.priceWei;
   const selectedDailyPrice = listingDailyCapacityPrice(selectedAskPrice, selectedDailyYield);
   const freshMarketReference = marketReference && !referenceIssue(marketReference) ? marketReference : null;
@@ -87,7 +88,7 @@ export default function OperatorQuotePicker({ config, mode, disabled, onApply })
     </tbody></table></div><p className="subtle-note">日产能价＝当前列表挂单价 ÷ 预计日产出，仅供比较；选中后仍以官网链上挂单或已核验 Firsto 订单为准。</p>{!page.rows.length && <p>未找到符合身份检查的报价，请调整搜索条件。</p>}
       <div className="operator-tabs"><button className="btn secondary" disabled={blocked || page.page <= 1} onClick={() => void load(page.page - 1)}>上一页</button><span>第 {page.page} / {Math.max(page.totalPages, 1)} 页</span><button className="btn secondary" disabled={blocked || page.page >= page.totalPages} onClick={() => void load(page.page + 1)}>下一页</button></div></>}
     {selected && <div className="operator-quote-selected"><h4><CheckCircle2 size={18}/>{Object.entries(OFFICIAL_COLLECTIONS).find(([, address]) => address.toLowerCase() === selected.chain.collection.toLowerCase())?.[0]} #{selected.chain.tokenId} · 矿机链上核对通过</h4>
-      <p>预计日产出：<strong>{selectedDailyYield ? `${amount(selectedDailyYield, 8)} BEM / 天` : '—'}</strong>{!selectedDailyYield ? capacityError ? `（${capacityError}）` : '（读取 Firsto 产能中）' : '（Firsto 估算）'}；链上核对区块 {selected.chain.blockNumber}。{!selected.quote && '官网挂单已核验，无需等待 Firsto 报价。'}</p>
+      <p>预计日产出：<strong>{selectedDailyYield ? `${amount(selectedDailyYield, 8)} BEM / 天` : '—'}</strong>{!selectedDailyYield ? capacityError ? `（${capacityError}）` : '（读取 Firsto 产能中）' : `（Firsto 估算，更新于 ${new Date(selectedYieldObservedAt).toLocaleString('zh-CN')}）`}；链上核对区块 {selected.chain.blockNumber}。{!selected.quote && '官网挂单已核验，无需等待 Firsto 报价。'}</p>
       <p>该矿机当前{selected.chain.official ? '官网' : 'Firsto'}挂单日产能价：<strong>{selectedDailyPrice == null ? '—' : `${selectedDailyPrice} BNB / (BEM / 天)`}</strong></p>
       <p>Firsto 全市场参考日产能价：<strong>{freshMarketReference ? `${amount(freshMarketReference.dailyCapacityPriceWei, 18)} BNB / (BEM / 天)` : '—'}</strong>{freshMarketReference ? `（更新于 ${new Date(freshMarketReference.observedAt).toLocaleString('zh-CN')}）` : marketReferenceError ? `（${marketReferenceError}）` : marketReference ? '（报价已过期，请重新选择）' : '（读取中）'}</p>
       <p className="subtle-note">两项价格口径不同：上方按这台矿机的可执行挂单价除以其预计日产出；Firsto 顶部展示的是全市场参考价。额外 10% 是募集预留，不计入这两个日产能价。</p>
