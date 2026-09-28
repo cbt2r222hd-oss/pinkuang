@@ -221,3 +221,30 @@ test('repinning rejects a changed owner instead of attaching capacity to an outd
   const result = await input(provider, { quoteLoader: async () => detail({ mining: { sourceBlock: '11' } }) });
   assert.deepEqual(result, { available: false, reason: 'quote_identity' });
 });
+
+test('identity-checked display metadata uses explicit classification and official active H', async () => {
+  const { parseMinerDisplayMetadata } = await import('../lib/share-daily-capacity.mjs');
+  assert.deepEqual(parseMinerDisplayMetadata({ status: 'verified', taskId: '4', weight: '12', verifiedWeight: '12', unverifiedWeight: '0' }),
+    { taskId: '4', miningClassification: 'verified', hashPower: '12' });
+  assert.deepEqual(parseMinerDisplayMetadata({ status: 'unverified', taskId: '0', weight: '6', verifiedWeight: '0', unverifiedWeight: '6' }),
+    { taskId: '0', miningClassification: 'unverified', hashPower: '6' });
+  for (const changes of [{ status: 'unknown' }, { weight: '13' }, { unverifiedWeight: '1' }, { verifiedWeight: null }, { taskId: '0' }, { taskId: '4294967296' }]) {
+    const value = parseMinerDisplayMetadata({ status: 'verified', taskId: '4', weight: '12', verifiedWeight: '12', unverifiedWeight: '0', ...changes });
+    assert.equal(value.miningClassification, null); assert.equal(value.hashPower, null);
+  }
+  const data = detail({ mining: { taskId: '4', weight: '12', verifiedWeight: '12', unverifiedWeight: '0' } });
+  const result = await input(rpc(), { quoteLoader: async () => data });
+  assert.equal(result.metadataAvailable, true); assert.equal(result.taskId, '4'); assert.equal(result.hashPower, '12');
+  const stale = await input(rpc({ sourceTimestamp: toQuantity(BigInt((now - 301_000) / 1000)) }), { quoteLoader: async () => data });
+  assert.equal(stale.metadataAvailable, undefined);
+});
+
+test('unverified metadata does not manufacture a verified capacity estimate', async () => {
+  const result = await input(rpc(), { quoteLoader: async () => detail({ mining: {
+    status: 'unverified', taskId: '0', weight: '1', verifiedWeight: '0', unverifiedWeight: '1', estimated24hAtomic: null,
+  } }) });
+  assert.equal(result.available, false); assert.equal(result.reason, 'unverified_output');
+  assert.equal(result.metadataAvailable, true); assert.equal(result.miningClassification, 'unverified');
+  assert.equal(result.hashPower, '1'); assert.equal(result.estimated24hAtomic, undefined);
+  assert.equal(result.validUntil, sourceAt + 300_000);
+});

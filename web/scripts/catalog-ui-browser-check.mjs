@@ -36,7 +36,7 @@ try {
     // A second pool intentionally has no verified output.
     const asset = { collection: row.params.circuits, tokenId, owner: row.pool,
       category: 'official_mining', classification: 'official_mining',
-      mining: { tokenSymbol: 'BEM', tokenDecimals: 8, status: 'verified', sourceBlock: '100',
+      mining: { tokenSymbol: 'BEM', tokenDecimals: 8, status: 'verified', sourceBlock: '100', taskId: '4', weight: '9', verifiedWeight: '9', unverifiedWeight: '0',
         estimated24hAtomic: row.pool === FIXTURE_POOLS.voting ? '0' : '95000000' },
       listingReference: { dailyCapacityPriceWei: String(({ '16210': 10n, '8204': 2n, '15832': 3n, '9052': 4n })[tokenId] * 10n ** 18n) } };
     await route.fulfill({ status: 200, contentType: 'application/json', body: encode({ asset }) });
@@ -53,15 +53,42 @@ try {
   assert.equal(await main.locator('table th').getByText('状态', { exact: true }).count(), 0);
   await main.getByText('10.00000', { exact: true }).waitFor();
   assert.match(await main.locator('table tbody').innerText(), /0\.95000 BEM/);
-  checks.push('funding default, overview fourth, no redundant status, verified daily output and reference render');
+  assert.deepEqual(await main.locator('table th').allTextContents(), ['矿机 / 项目', '矿机归类', '算力 H', '已募集', '每份金额', '预计日产', '日产能价', '']);
+  assert.equal(await main.locator('table .asset-cell small').innerText(), 'Task 4');
+  assert.equal(await main.locator('table .asset-cell svg text').textContent(), 'T');
+  assert.match(await main.locator('table tbody').innerText(), /已验证/);
+  checks.push('funding default, exact funding columns, verified metadata, Task and T chip');
   const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
   assert.equal(await noOverflow(), true);
   await fs.mkdir('/tmp/bemine-ui-review', { recursive: true });
+  if (width >= 1440) assert.equal(await main.locator('.table-wrap').first().evaluate(node => node.scrollWidth <= node.clientWidth), true, 'funding columns fit desktop');
   await page.screenshot({ path: `/tmp/bemine-ui-review/catalog-funding-${width}.png`, fullPage: true });
+  await tabs.getByRole('button', { name: '挖矿中', exact: true }).click();
+  assert.deepEqual(await main.locator('table th').allTextContents(), ['矿机 / 项目', '矿机归类', '算力 H', '已募集', '参与人数', '购机金额', '预计日产', '']);
+  assert.equal(await main.locator('table .asset-cell svg text').first().textContent(), 'B');
+  assert.match(await main.locator('table tbody').innerText(), /8\.00000 BNB/);
+  if (width >= 1440) assert.equal(await main.locator('.table-wrap').first().evaluate(node => node.scrollWidth <= node.clientWidth), true, 'active columns fit desktop');
+  await page.screenshot({ path: `/tmp/bemine-ui-review/catalog-active-${width}.png`, fullPage: true });
+  await tabs.getByRole('button', { name: '整机出售中', exact: true }).click();
+  assert.deepEqual(await main.locator('table th').allTextContents(), ['矿机 / 项目', '矿机归类', '算力 H', '每份金额', '预计日产', '日产能价', '']);
+  checks.push('active and listed each use their requested columns');
   await tabs.getByRole('button', { name: '项目总览', exact: true }).click();
   assert.equal(await main.locator('table th').getByText('状态', { exact: true }).count(), 1);
-  await main.getByRole('button', { name: '筛选排序', exact: true }).click();
-  await main.getByRole('combobox').selectOption('capacity');
+  const sort = main.getByRole('button', { name: '筛选排序', exact: true });
+  const before = await main.locator('table').boundingBox();
+  await sort.click();
+  await main.getByRole('menu').waitFor();
+  await page.screenshot({ path: `/tmp/bemine-ui-review/catalog-sort-menu-${width}.png`, fullPage: true });
+  assert.equal((await main.locator('table').boundingBox()).y, before.y, 'sort menu does not insert a layout row');
+  await page.keyboard.press('Escape');
+  assert.equal(await main.getByRole('menu').count(), 0);
+  assert.equal(await sort.evaluate(element => element === document.activeElement), true);
+  await sort.click(); await main.locator('h1').click();
+  assert.equal(await main.getByRole('menu').count(), 0);
+  await sort.focus(); await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('End'); await page.keyboard.press('ArrowUp'); await page.keyboard.press('Enter');
+  assert.equal(await main.getByRole('menu').count(), 0);
+  checks.push('sort popover keeps layout fixed, closes on Escape/outside and supports arrow-key selection');
   await main.getByText('2.00000', { exact: true }).waitFor();
   await main.getByText('3.00000', { exact: true }).waitFor();
   assert.deepEqual(await main.locator('table tbody .asset-cell strong').allTextContents(), ['Behemoth #8204', 'TapeOut #15832', 'TapeOut #16210', 'Behemoth #9052']);
@@ -77,6 +104,17 @@ try {
   assert.equal(await noOverflow(), true);
   await page.screenshot({ path: `/tmp/bemine-ui-review/catalog-position-${width}.png`, fullPage: true });
   checks.push(`${width}px: five-decimal BNB sidebar and no horizontal page overflow`);
+  await page.evaluate(() => { location.hash = 'overview'; });
+  await page.waitForFunction(() => document.querySelector('main')?.dataset.readyRoute === 'overview');
+  await main.locator('.holdings .asset-cell').first().waitFor();
+  assert.equal(await main.locator('.live-overview-metrics .metric-note').count(), 0);
+  const metricHeights = await main.locator('.live-overview-metrics .metric').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
+  assert(metricHeights.every(height => height <= 160), JSON.stringify(metricHeights));
+  const actionGap = await main.locator('.live-pool-row-actions').first().evaluate(node => parseFloat(getComputedStyle(node).columnGap));
+  assert(actionGap >= 16);
+  assert.equal(await noOverflow(), true);
+  await page.screenshot({ path: `/tmp/bemine-ui-review/asset-overview-${width}.png`, fullPage: true });
+  checks.push('asset metrics are compact without notes; holdings actions have spacing');
   assert.equal(fixture.controls.sentTransactions.length, 0); assert.deepEqual(errors, []);
   console.log(JSON.stringify({ width, passed: checks.length, checks }));
 } finally { clearTimeout(deadline); await browser.close(); }
