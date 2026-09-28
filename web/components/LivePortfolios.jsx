@@ -23,7 +23,7 @@ const same = (a,b) => typeof a === 'string' && typeof b === 'string' && a.toLowe
 const brief = error => error?.shortMessage || error?.message || '预算项目读取未完成。';
 
 /** A parent project owns its miners. Its 100 shares are never counted once per child. */
-export default function LivePortfolios({ config, provider, client, locale, account, wallet, mode = 'pools', initialPool, disabled, onConnect, onSend, onSendQueue, onShare, onBuyChild, refreshKey = 0 }) {
+export default function LivePortfolios({ config, provider, client, locale, account, wallet, mode = 'pools', initialPool, disabled, onConnect, onSend, onSendQueue, onShare, onBuyChild, operatorVerified = false, refreshKey = 0 }) {
   const T=text=>portfolioText(locale,text);
   const [rows,setRows]=useState([]),[cursor,setCursor]=useState(null),[selected,setSelected]=useState(null),[operator,setOperator]=useState(null);
   const [loading,setLoading]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[preview,setPreview]=useState(null);
@@ -40,7 +40,7 @@ export default function LivePortfolios({ config, provider, client, locale, accou
   const enabled=config?.kind==='integrated-v2' && provider;
   const mine=['overview','rewards'].includes(mode);
   const current=ticket=>ticket===sequence.current;
-  const isOperator=same(operator,account);
+  const isOperator=operatorVerified || same(operator,account);
   const visibleRows=loadedIdentity===identity?rows:[];
   const selectedCurrent=selected && visibleRows.some(row=>same(row.pool,selected.pool)) && same(selected.account,account || ZeroAddress) ? selected:null;
   const frozen=busy || loading || disabled;

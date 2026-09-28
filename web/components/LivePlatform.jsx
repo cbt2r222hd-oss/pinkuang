@@ -2524,7 +2524,7 @@ export default function LivePlatform() {
             {isOperator && <LiveOperator key={`${config?.factory}:${account}:${walletRevision}:${refresh}`} config={config} wallet={wallet} account={account}
               operator={operator} disabled={loading || busy || !!pending} onSend={sendAdminAction}
               onRefresh={() => setRefresh(value => value + 1)}/>}
-            <LivePortfolios config={config} provider={client?.provider} account={account} wallet={wallet} mode="operator" locale={locale}
+            <LivePortfolios config={config} provider={client?.provider} account={account} wallet={wallet} mode="operator" locale={locale} operatorVerified={isPortfolioOperator}
               disabled={loading || busy || !!pending} onConnect={connect} onSend={sendPortfolio}
               onSendQueue={sendBudgetQueueStep} onShare={pool => setModal({ type: 'portfolio-share', pool })}
               onBuyChild={pool => openAction('completeFirstoSale', { pool })} refreshKey={refresh}/>
