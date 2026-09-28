@@ -13,7 +13,13 @@ CHAIN_INDEX_DB=/private/path/bemine-index.sqlite \
 npm run start:chain-index
 ```
 
-默认仅监听 `127.0.0.1:4180`；公开提供时应通过受限流的反向代理。RPC 必须是可信 BSC 主网节点。服务检查链 ID 56、Factory/Market 互相绑定与代码存在；每轮只读取最多 500 个区块，每次 `eth_getLogs` 最多 100 区块、20 个池地址。默认等待 12 个确认；即使达到该深度，历史重组仍可能发生，服务会比较保存的区块哈希、回滚分叉事件并重放。SQLite 每批区块、事件和池登记在一个事务中提交；重启后要重新核链才提供数据。追到安全区块后，还会核对 Factory `poolCount` 和 Market `nextOrderId`，发现起始区块过晚或缺日志时返回未知，不会把不完整历史当成零。
+默认仅监听 `127.0.0.1:4180`；公开提供时应通过受限流的反向代理。RPC 必须是可信 BSC 主网节点。服务检查链 ID 56、Factory/Market 互相绑定与代码存在；每轮只读取最多 500 个区块，每次 `eth_getLogs` 默认 100、最多 500 区块，以及最多 20 个池地址。默认等待 12 个确认；即使达到该深度，历史重组仍可能发生，服务会比较保存的区块哈希、回滚分叉事件并重放。SQLite 每批区块、事件和池登记在一个事务中提交；重启后要重新核链才提供数据。追到安全区块后，还会核对 Factory `poolCount` 和 Market `nextOrderId`，发现起始区块过晚或缺日志时返回未知，不会把不完整历史当成零。
+
+`CHAIN_INDEX_LOGS_RPC_URL` 可将日志读请求分流到独立的已核验 BSC 节点。`CHAIN_INDEX_LOGS_TIMEOUT_MS` 默认 `12000`，仅允许 `12000..30000` 的精确整数毫秒；确认节点存在尾延迟时可显式配置 `30000`。它只延长日志 provider 的请求期限，primary 的区块头、代码和合约调用仍为12秒；即使两者使用同一URL也保持期限分离。不自动重试HTTP `Retry-After`，由原同步退避控制重试。服务停机先停止排队请求并等待正在执行的请求收尾，部署仍保留45秒 `TimeoutStopSec`，不可因为延长日志请求而缩短这一限制。
+
+每段的 core Factory/Market 与 portfolio Factory/Market 全局日志并发读取，全部请求结束后才处理结果或抛错；新发现矿池与预算项目的动态日志仍在注册校验后读取。`CHAIN_INDEX_SCAN_RANGE` 默认100、可配置1..500，因此实际日志范围随配置变化，不超过500块；完整性、末端canonical块复核和整段SQLite事务保持不变。
+
+私有故障诊断应只记录固定角色（primary/logs）、方法白名单、数字区块范围、耗时、受限错误码（如 TIMEOUT/SERVER_ERROR、数字JSON-RPC码）和HTTP状态码；不要记录RPC URL、请求/响应body、headers、错误message或堆栈。对外 `/health` 继续只报告 `sync_failed` 等既有有限原因，不把失败当空列表或沿用未验收快照。
 
 每个响应的 `source` 含固定合约身份、已索引区块号/哈希/时间、安全头和 `complete`。追赶、RPC 错误、重组或身份不匹配时，除 `/health` 外返回 HTTP 503，`data:null`。金额、NFT 编号、订单编号都是十进制字符串；时间戳为秒。分页上限 50。
 

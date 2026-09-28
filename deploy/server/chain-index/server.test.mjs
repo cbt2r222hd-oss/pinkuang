@@ -21,6 +21,11 @@ test('production configuration keeps HTTPS and loopback requirements', () => {
   assert.equal(serverConfiguration(env).rpc, env.CHAIN_INDEX_RPC_URL);
   assert.equal(serverConfiguration(env).host, '127.0.0.1');
   assert.equal(serverConfiguration(env).scanRange, 100);
+  assert.equal(serverConfiguration(env).logsTimeoutMs, 12_000);
+  for (const timeout of ['12000', '15000', '30000'])
+    assert.equal(serverConfiguration({ ...env, CHAIN_INDEX_LOGS_TIMEOUT_MS: timeout }).logsTimeoutMs, Number(timeout));
+  for (const timeout of ['', '11999', '30001', '-1', '12000.5', ' 12000', '012000', '3e4', 'Infinity', '9007199254740992'])
+    assert.throws(() => serverConfiguration({ ...env, CHAIN_INDEX_LOGS_TIMEOUT_MS: timeout }), /logs timeout|Logs timeout/);
   for (const scanRange of ['1', '50', '500'])
     assert.equal(serverConfiguration({ ...env, CHAIN_INDEX_SCAN_RANGE: scanRange }).scanRange, Number(scanRange));
   for (const scanRange of ['', '0', '501', '-1', '1.5', '50abc', ' 50', '050', '1e2', '9007199254740992'])
@@ -34,8 +39,9 @@ test('production configuration keeps HTTPS and loopback requirements', () => {
 const binding = new Interface(['function shareMarket() view returns(address)', 'function factory() view returns(address)',
   'function poolCount() view returns(uint256)', 'function nextOrderId() view returns(uint256)']);
 const hex = number => `0x${number.toString(16).padStart(64, '0')}`;
-function rpcFixture({ logs = false, logsFailure = false, chainId = '0x38' } = {}) {
+function rpcFixture({ logs = false, logsFailure = false, chainId = '0x38', firstLogsDelayMs = 0 } = {}) {
   const calls = [];
+  let delayed = false;
   const server = createServer(async (request, response) => {
     let body = ''; for await (const part of request) body += part;
     const input = JSON.parse(body), list = Array.isArray(input) ? input : [input];
@@ -61,6 +67,10 @@ function rpcFixture({ logs = false, logsFailure = false, chainId = '0x38' } = {}
       }
       return { jsonrpc: '2.0', id: payload.id, result };
     });
+    if (firstLogsDelayMs && !delayed && list.some(payload => payload.method === 'eth_getLogs')) {
+      delayed = true;
+      await new Promise(resolve => setTimeout(resolve, firstLogsDelayMs));
+    }
     if (logsFailure && list.some(payload => payload.method === 'eth_getLogs')) {
       response.writeHead(429, { 'Retry-After': '90' }); response.end('rate limited');
     } else { response.setHeader('content-type', 'application/json'); response.end(JSON.stringify(Array.isArray(input) ? replies : replies[0])); }
@@ -88,6 +98,18 @@ test('separate RPC routes headers/calls to primary and only logs to its verified
   } finally { await service?.close(); await stop(primary.server); await stop(logs.server); }
 });
 
+test('an explicitly extended logs deadline accepts a valid response beyond the primary 12-second deadline', { timeout: 20_000 }, async () => {
+  const primary = rpcFixture(), logs = rpcFixture({ logs: true, firstLogsDelayMs: 12_500 }); let service;
+  try {
+    const rpc = await listen(primary.server), logsRpc = await listen(logs.server);
+    service = await startChainIndex({ ...config(rpc), logsRpc, logsTimeoutMs: 30_000 });
+    await until(() => service.index.status().complete, 17_000);
+    assert.equal(service.index.indexedThrough, 2);
+    assert.equal(logs.calls.filter(row => row.method === 'eth_getLogs').length, 2, 'one successful scan, no hidden retry');
+    assert(primary.calls.every(row => row.method !== 'eth_getLogs'));
+  } finally { await service?.close(); await stop(primary.server); await stop(logs.server); }
+});
+
 test('logs rate limit remains a failure, backs off instead of retrying each second, and stops cleanly', { timeout: 7_000 }, async () => {
   const primary = rpcFixture(), logs = rpcFixture({ logs: true, logsFailure: true }); let service;
   try {
@@ -96,9 +118,9 @@ test('logs rate limit remains a failure, backs off instead of retrying each seco
     const failures = () => logs.calls.filter(row => row.method === 'eth_getLogs');
     await until(() => service.index.status().unknownReason === 'sync_failed');
     assert.equal(service.index.indexedThrough, 0); assert.equal(service.index.status().complete, false);
-    await new Promise(resolve => setTimeout(resolve, 1_200)); assert.equal(failures().length, 1);
-    await until(() => failures().length === 2, 4_000);
-    assert(failures()[1].at - failures()[0].at >= 4_000);
+    await new Promise(resolve => setTimeout(resolve, 1_200)); assert.equal(failures().length, 2, 'both fixed global reads drain in the failed scan');
+    await until(() => failures().length === 4, 4_000);
+    assert(failures()[2].at - failures()[0].at >= 4_000);
     await service.close(); const afterClose = primary.calls.length + logs.calls.length;
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(primary.calls.length + logs.calls.length, afterClose);
@@ -116,12 +138,12 @@ test('a logs endpoint on another chain cannot advance the index or return empty 
   } finally { await service?.close(); await stop(primary.server); await stop(logs.server); }
 });
 
-test('a stalled RPC is bounded and service close is idempotent', { timeout: 16_000 }, async () => {
+test('primary RPC stays at 12 seconds with an extended same-URL logs deadline and close is idempotent', { timeout: 16_000 }, async () => {
   let entered; const started = new Promise(resolve => { entered = resolve; });
   const upstream = createServer(() => { entered(); });
   let service;
   try {
-    const rpc = await listen(upstream); service = await startChainIndex(config(rpc));
+    const rpc = await listen(upstream); service = await startChainIndex({ ...config(rpc), logsTimeoutMs: 30_000 });
     await started;
     const begin = performance.now(); const closing = service.close();
     assert.equal(service.close(), closing, 'simultaneous shutdown requests share one completion');

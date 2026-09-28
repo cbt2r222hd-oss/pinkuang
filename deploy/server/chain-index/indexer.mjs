@@ -270,8 +270,20 @@ export class ChainIndex {
         headers.push(header);
       }
     }
-    const factoryLogs = await this._logs('factory', [this.factory], fromBlock, toBlock);
-    const marketLogs = await this._logs('market', [this.market], fromBlock, toBlock);
+    // These registered global addresses do not depend on discovery in this chunk.
+    // Drain every request before throwing, so a failed scan cannot leave old reads
+    // running after the sync lock is released or during a new scan/shutdown.
+    const globalReads = await Promise.allSettled([
+      this._logs('factory', [this.factory], fromBlock, toBlock),
+      this._logs('market', [this.market], fromBlock, toBlock),
+      ...(this.portfolioFactory ? [
+        this._logs('portfolioFactory', [this.portfolioFactory], fromBlock, toBlock),
+        this._logs('portfolioMarket', [this.portfolioMarket], fromBlock, toBlock),
+      ] : []),
+    ]);
+    const failedGlobal = globalReads.find(result => result.status === 'rejected');
+    if (failedGlobal) throw failedGlobal.reason;
+    const [factoryLogs, marketLogs, portfolioFactoryLogs, portfolioMarketLogs] = globalReads.map(result => result.value);
     const existing = this.db.prepare('SELECT address FROM pools').all().map(row => row.address);
     const created = [];
     for (const log of factoryLogs.filter(log => log.name === 'PoolCreated')) {
@@ -284,7 +296,7 @@ export class ChainIndex {
     const poolLogs = await this._logs('pool', [...new Set([...existing, ...created.map(entry => entry.address)])], fromBlock, toBlock);
     const portfolioLogs=[],newPortfolios=[],newChildren=[];
     if (this.portfolioFactory) {
-      const factoryEvents=await this._logs('portfolioFactory',[this.portfolioFactory],fromBlock,toBlock);
+      const factoryEvents=portfolioFactoryLogs;
       const known=this.db.prepare('SELECT address FROM portfolios').all().map(row=>row.address);
       for (const log of factoryEvents) {
         const address=exactAddress(log.args.portfolio);
@@ -308,7 +320,7 @@ export class ChainIndex {
           throw new Error('Child purchase event differs from portfolio custody.');
         newChildren.push({address:child,portfolio:log.address,purchasedBlock:log.blockNumber,...log.args});
       }
-      portfolioLogs.push(...factoryEvents,...events,...await this._logs('portfolioMarket',[this.portfolioMarket],fromBlock,toBlock));
+      portfolioLogs.push(...factoryEvents,...events,...portfolioMarketLogs);
     }
     const logs = [...factoryLogs, ...marketLogs, ...poolLogs,...portfolioLogs].sort((a, b) => a.blockNumber - b.blockNumber || a.txIndex - b.txIndex || a.logIndex - b.logIndex);
     const hashes = new Map(headers.map(header => [header.number, header.hash]));

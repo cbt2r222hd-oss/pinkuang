@@ -13,6 +13,11 @@ const exactNumber = (value, label) => {
   if (!Number.isSafeInteger(number)) throw new Error(`Invalid ${label}.`);
   return number;
 };
+const logsTimeout = value => {
+  const timeout = exactNumber(value ?? 12_000, 'logs timeout');
+  if (timeout < 12_000 || timeout > 30_000) throw new Error('Logs timeout must be between 12000 and 30000 milliseconds.');
+  return timeout;
+};
 
 export function serverConfiguration(env = process.env) {
   const rpc = required(env, 'CHAIN_INDEX_RPC_URL');
@@ -26,15 +31,15 @@ export function serverConfiguration(env = process.env) {
   const scanRange = exactNumber(env.CHAIN_INDEX_SCAN_RANGE ?? '100', 'scan range');
   if (scanRange < 1 || scanRange > 500) throw new Error('Scan range must be between 1 and 500 blocks.');
   if(Boolean(env.CHAIN_INDEX_PORTFOLIO_FACTORY)!==Boolean(env.CHAIN_INDEX_PORTFOLIO_MARKET))throw new Error('Configure both portfolio Factory and market.');
-  return { rpc, logsRpc, host, port, dbPath: required(env, 'CHAIN_INDEX_DB'), factory: required(env, 'CHAIN_INDEX_FACTORY'),
+  return { rpc, logsRpc, logsTimeoutMs: logsTimeout(env.CHAIN_INDEX_LOGS_TIMEOUT_MS), host, port, dbPath: required(env, 'CHAIN_INDEX_DB'), factory: required(env, 'CHAIN_INDEX_FACTORY'),
     ...(env.CHAIN_INDEX_PORTFOLIO_FACTORY?{portfolioFactory:env.CHAIN_INDEX_PORTFOLIO_FACTORY,portfolioMarket:env.CHAIN_INDEX_PORTFOLIO_MARKET}:{}),
     market: required(env, 'CHAIN_INDEX_MARKET'), startBlock: exactNumber(required(env, 'CHAIN_INDEX_START_BLOCK'), 'start block'),
     confirmations: exactNumber(env.CHAIN_INDEX_CONFIRMATIONS || '12', 'confirmations'), scanRange };
 }
 
-function readProvider(rpc) {
+function readProvider(rpc, timeout = 12_000) {
   const request = new FetchRequest(rpc);
-  request.timeout = 12_000;
+  request.timeout = timeout;
   // The sync loop retries failures; an upstream Retry-After must not hold shutdown open.
   request.retryFunc = async () => false;
   // ChainIndex asks eth_chainId directly on every sync before indexing any data.
@@ -45,8 +50,12 @@ function readProvider(rpc) {
 }
 
 export async function startChainIndex(config) {
+  const logsTimeoutMs = logsTimeout(config.logsTimeoutMs);
   const primary = readProvider(config.rpc);
-  const logs = config.logsRpc && config.logsRpc !== config.rpc ? readProvider(config.logsRpc) : primary;
+  // A longer logs deadline must never lengthen primary header/code/call requests,
+  // including when both roles point at the same URL.
+  const logsRpc = config.logsRpc || config.rpc;
+  const logs = logsRpc !== config.rpc || logsTimeoutMs !== 12_000 ? readProvider(logsRpc, logsTimeoutMs) : primary;
   const providers = [...new Set([primary, logs])];
   const provider = Object.freeze({
     send: async (method, params) => {
@@ -100,7 +109,8 @@ export async function startChainIndex(config) {
     closing = (async () => {
       stopped = true;
       if (timer) clearTimeout(timer);
-      // Cancel queued reads now; any active HTTP request is bounded by its 12s timeout.
+      // Cancel queued reads now. Active primary requests stay bounded by 12s;
+      // logs requests by at most 30s, within the deployment's 45s stop allowance.
       for (const source of providers) source.destroy();
       await running;
       await new Promise(resolve => server.close(resolve));

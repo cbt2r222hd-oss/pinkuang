@@ -52,3 +52,44 @@ test('portfolio bindings and omitted child history keep data unavailable',async(
     await assert.rejects(f.index.sync());assert.equal(f.index.status().complete,false);
   }finally{f.index.close();}}
 });
+
+test('four global log reads overlap, then discovered pool and portfolio reads preserve complete history', {timeout:3000}, async()=>{
+  const f=fixture(),globals=new Set([factory,market,portfolioFactory,portfolioMarket]);
+  const original=f.index.provider.getLogs,started=new Set(),finished=new Set(),releases=[];let allStarted;
+  const entered=new Promise(resolve=>{allStarted=resolve;});let dynamic=0,scanning;
+  f.index.provider.getLogs=async filter=>{
+    if(globals.has(filter.address)){
+      started.add(filter.address);if(started.size===4)allStarted();
+      await new Promise(resolve=>releases.push(resolve));finished.add(filter.address);
+    }else{assert.equal(finished.size,4,'discovery-dependent reads begin only after all global reads settle');dynamic++;}
+    return original(filter);
+  };
+  try{
+    scanning=f.index.sync();scanning.catch(()=>{});await entered;
+    assert.equal(started.size,4);assert.equal(dynamic,0);assert.equal(f.index.indexedThrough,0);
+    for(const release of releases.reverse())release();await scanning;
+    assert.equal(f.index.status().complete,true);assert.equal(dynamic,2);
+    assert.equal(f.index.portfolioChildren(portfolio).items.length,1);
+    assert.equal(f.index.stats().purchasedCostWei,'500');
+  }finally{for(const release of releases)release();await scanning?.catch(()=>{});f.index.close();}
+});
+
+test('a failed global log read drains the other three before sync unlocks and never commits partial history', {timeout:3000}, async()=>{
+  const f=fixture(),globals=new Set([factory,market,portfolioFactory,portfolioMarket]);
+  const original=f.index.provider.getLogs,started=new Set(),releases=[];let allStarted,active=0,dynamic=0,scanning;
+  const entered=new Promise(resolve=>{allStarted=resolve;});
+  f.index.provider.getLogs=async filter=>{
+    if(!globals.has(filter.address)){dynamic++;return original(filter);}
+    started.add(filter.address);active++;if(started.size===4)allStarted();
+    try{if(filter.address===factory)throw new Error('global log unavailable');await new Promise(resolve=>releases.push(resolve));return original(filter);}
+    finally{active--;}
+  };
+  try{
+    scanning=f.index.sync();scanning.catch(()=>{});await entered;await Promise.resolve();
+    assert.equal(active,3);assert.equal(f.index.syncing,true);assert.equal(f.index.indexedThrough,0);
+    assert.equal(f.index.db.prepare('SELECT count(*) AS n FROM headers').get().n,0);assert.equal(dynamic,0);
+    for(const release of releases)release();await assert.rejects(scanning,/global log unavailable/);
+    assert.equal(active,0);assert.equal(f.index.syncing,false);assert.equal(f.index.indexedThrough,0);
+    assert.equal(f.index.status().unknownReason,'sync_failed');assert.equal(dynamic,0);
+  }finally{for(const release of releases)release();await scanning?.catch(()=>{});f.index.close();}
+});
