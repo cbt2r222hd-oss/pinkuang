@@ -345,3 +345,15 @@ test('graph cache never bypasses per-request canonical block-hash validation', a
     assert.equal(f.state.activity.graphs, 1, 'reorg is rejected before cached proof can be used');
   } finally { await f.close(); }
 });
+
+test('asynchronous single-pool discovery exposes only the pinned pool job and completes without a signing session',async()=>{
+  let release;const f=await fixture({discovery:async(_rpc,options)=>{
+    await new Promise(resolve=>{release=resolve;});return {complete:true,chainBlock:options.blockNumber,candidates:[]};
+  }});
+  try{
+    const first=await f.get(path(10)+'&async=1');assert.equal(first.status,202);assert.equal(first.body.pool,pool);
+    assert.equal(first.body.parent,undefined);assert.equal(first.body.blockHash,hash(10));
+    release();await new Promise(resolve=>setTimeout(resolve,10));
+    const done=await f.get(path(10)+'&async=1');assert.equal(done.status,200);assert.equal(done.body.complete,true);
+  }finally{release?.();await f.close();}
+});

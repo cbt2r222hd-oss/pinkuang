@@ -11,6 +11,7 @@ const HASH = /^0x[0-9a-f]{64}$/i;
 const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
 const STATES = new Set(['Funding', 'Funded', 'Active', 'Listed', 'Closed', 'Refunding']);
 const COLLECTION_NAMES = new Set(['TapeOut', 'Behemoth']);
+export const validShareBasePath = value => typeof value === 'string' && /^\/bemine(?:-[a-z0-9_-]+)?\/?$/.test(value);
 
 function address(value) {
   return typeof value === 'string' && ADDRESS.test(value) && value.toLowerCase() !== ZERO_ADDRESS
@@ -23,8 +24,8 @@ export function validatePublicBaseUrl(value) {
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || !PUBLIC_ORIGINS.has(url.origin) || url.username || url.password
-      || url.search || url.hash || !['/bemine', '/bemine/'].includes(url.pathname)) return null;
-    url.pathname = '/bemine/';
+      || url.search || url.hash || !validShareBasePath(url.pathname)) return null;
+    url.pathname = `${url.pathname.replace(/\/$/,'')}/`;
     return url.href;
   } catch { return null; }
 }

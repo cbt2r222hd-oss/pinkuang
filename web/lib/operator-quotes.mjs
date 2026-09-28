@@ -2,6 +2,7 @@ import { Interface, ZeroAddress, getAddress, toQuantity } from 'ethers';
 import { OFFICIAL_COLLECTIONS, fetchQuotePage, fetchMineQuote, fetchCapacityReference, quoteIssue, createQuotePlan } from '../../deploy/src/pricing.ts';
 import { createReadOnlyHttpProvider } from './live-config.mjs';
 import { settleReadRound } from './read-retry.mjs';
+import { QUOTE_BASE } from './quote-base.mjs';
 import { uint, referenceQuote } from './chain-client.mjs';
 import { parseFirstoSignedAsk, verifyFirstoSignedAsk } from '../../deploy/src/firsto-purchase.mjs';
 
@@ -26,7 +27,7 @@ function minerEligibilityIssue(miner) {
   if (miner.unverWeight !== 0n) return '矿机含未验证权重，当前只支持纯验证权重矿机。';
   return null;
 }
-export const QUOTE_BASE = '/pinkuang-deploy/firsto-api';
+export { QUOTE_BASE };
 export const QUOTE_SOURCE = 'https://tapeout.firsto.ai/circuits';
 /** Exact BNB per estimated daily BEM for the displayed market ask; never use the fundraising reserve. */
 export function listingDailyCapacityPrice(priceWei, estimated24hAtomic, decimals = 4) {

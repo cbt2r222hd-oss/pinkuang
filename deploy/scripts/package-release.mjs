@@ -9,7 +9,7 @@ import { servedArtifactDigest } from '../server/artifact-digest.mjs';
 const DEPLOY = fileURLToPath(new URL('../', import.meta.url));
 const TREES = ['dist', 'server', 'shared'];
 // journal-api statically imports this read-only helper. Never include keeper CLIs.
-const RUNTIME_SCRIPTS = ['scripts/official-market-discovery.mjs'];
+const RUNTIME_SCRIPTS = ['scripts/official-market-discovery.mjs', 'scripts/budget-official-discovery.mjs', 'scripts/budget-multicall-read.mjs'];
 const RUNTIME_SOURCES = ['src/firsto-purchase.mjs'];
 const EXACT_FILES = ['package.json', 'package-lock.json', 'public/deployment-artifacts.json', ...RUNTIME_SCRIPTS, ...RUNTIME_SOURCES];
 const SOURCE_EXTENSIONS = new Set(['.mjs', '.mts', '.json', '.md']);

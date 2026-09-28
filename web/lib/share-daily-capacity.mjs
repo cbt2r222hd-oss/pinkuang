@@ -1,12 +1,12 @@
 import { Interface, ZeroAddress, getAddress, toQuantity } from 'ethers';
 import { fetchMineDetail, FIRSTO_SOURCE, MAX_QUOTE_AGE_MS, OFFICIAL_COLLECTIONS } from '../../deploy/src/pricing.ts';
 import { abi, CHAIN_ID, uint } from './chain-client.mjs';
+import { QUOTE_BASE } from './quote-base.mjs';
 
 const NFT = new Interface(['function ownerOf(uint256) view returns(address)']);
 const OFFICIAL = new Set(Object.values(OFFICIAL_COLLECTIONS).map(value => value.toLowerCase()));
 const BEM_ATOMIC_PER_TOKEN = 100_000_000n;
 const TOTAL_SHARES = 100n;
-const QUOTE_BASE = '/pinkuang-deploy/firsto-api';
 const unavailable = reason => Object.freeze({ available: false, reason });
 const exactDecimal = value => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value) ? uint(value) : null;
 function blockTime(header, number) {

@@ -1,7 +1,7 @@
 import { Interface, getAddress, ZeroAddress, toQuantity } from 'ethers';
 import { abi, ARTIFACT_DIGEST, uint, checkedPoolCreation, readPoolSnapshot } from './chain-client.mjs';
 import { loadOperatorQuote, readMachineRegistry, readOfficialMinerOnchain } from './operator-quotes.mjs';
-import { fetchLiveJson } from './live-config.mjs';
+import { pollMarketDiscovery } from './discovery-poll.mjs';
 import { decodeFirstoOrder, verifyFirstoSignedAsk } from '../../deploy/src/firsto-purchase.mjs';
 
 const need = (value, message) => { if (!value) throw new Error(message); };
@@ -50,8 +50,7 @@ async function findOfficialAlternative({ request, config, pool, row, status, tag
   const journalBase = (config.journalBase ?? `${config.basePath ?? ''}/api/journal`).replace(/\/$/, '');
   let result;
   try {
-    result = await fetchLiveJson(`${journalBase}/official-candidates?${query}`,
-      { maxBytes: 512000, timeoutMs: 40000 });
+    result = await pollMarketDiscovery(`${journalBase}/official-candidates?${query}`,{maxBytes:512000});
   } catch (error) {
     if (error?.details?.status === 429) throw new Error('官网候选扫描繁忙，请稍后重试。');
     throw error;

@@ -1,5 +1,6 @@
-import { Contract, ZeroAddress, getAddress } from 'ethers';
-import { fetchOfficialSnapshot, OFFICIAL_MARKET, MAX_NEW_LISTINGS } from './official-market-discovery.mjs';
+import { Interface, ZeroAddress, getAddress } from 'ethers';
+import { OFFICIAL_MARKET } from './official-market-discovery.mjs';
+import { createBudgetMulticallReader,MAX_READ_BATCH,MAX_READ_CONCURRENCY } from './budget-multicall-read.mjs';
 
 const COLLECTIONS = new Set([
   '0xb1024b89886b9a34aa4ff5f31c411d708b20a14c',
@@ -43,70 +44,55 @@ function listing(row, maxId) {
   return { id, collection, tokenId, seller, costWei };
 }
 
-function defaultRead(provider, blockNumber) {
-  const market = new Contract(OFFICIAL_MARKET, MARKET_ABI, provider);
-  const mining = new Contract(MINING, MINING_ABI, provider);
-  const opts = { blockTag: blockNumber };
+async function defaultRead(provider, blockNumber,signal) {
+  const reader=await createBudgetMulticallReader({provider,blockNumber,signal});
+  const market = new Interface(MARKET_ABI), mining = new Interface(MINING_ABI), nft=new Interface(NFT_ABI);
   return {
-    chainId: async () => (await provider.getNetwork()).chainId,
-    nextListingId: () => market.nextListingId(opts),
+    chainId: async () => BigInt(await provider.send('eth_chainId',[])),
+    nextListingId: async () => (await reader.call(OFFICIAL_MARKET,market,'nextListingId'))[0],
     listingView: async id => {
-      const row = await market.listingView(id, opts);
+      const row = await reader.call(OFFICIAL_MARKET,market,'listingView',[id]);
       return { id, seller: row.seller, circuits: row.circuits, circuitId: row.tokenId,
         price: row.price, valid: row.valid };
     },
-    listingFor: (collection, tokenId) => market.listingFor(collection, tokenId, opts),
-    ownerOf: (collection, tokenId) => new Contract(collection, NFT_ABI, provider).ownerOf(tokenId, opts),
+    listingFor: (collection, tokenId) => reader.call(OFFICIAL_MARKET,market,'listingFor',[collection,tokenId]),
+    ownerOf: async (collection, tokenId) => (await reader.call(collection,nft,'ownerOf',[tokenId]))[0],
     miner: async (collection, tokenId) => {
-      const key = await mining.minerKey(collection, tokenId, opts);
-      return mining.getMiner(key, opts);
+      const key = (await reader.call(MINING,mining,'minerKey',[collection,tokenId]))[0];
+      return (await reader.call(MINING,mining,'getMiner',[key]))[0];
     },
     blockHash: async () => (await provider.getBlock(blockNumber))?.hash,
   };
 }
 
 /** Complete, pinned official-market candidate discovery for a reviewed basket budget. */
-export async function discoverOfficialBudgetCandidates({ provider, read, fetcher = fetch, now = Date.now(),
-  blockNumber, signal, absoluteCapWei, unitCapWei, maxActive = 2_000,
-  maxNewListings = MAX_NEW_LISTINGS } = {}) {
+export async function discoverOfficialBudgetCandidates({ provider, read, now = Date.now(),
+  blockNumber, signal, absoluteCapWei, unitCapWei, maxActive = 10_000,
+  maxHistoricalListings = 100_000 } = {}) {
   need(provider || read, 'A read-only BSC source is required.');
   const absolute = uint(absoluteCapWei, 'absolute miner cap');
   const perWeight = uint(unitCapWei, 'verified-weight unit cap');
   need(absolute > 0n && perWeight > 0n, 'Miner price caps must be positive.');
   active(signal);
-  const source = await fetchOfficialSnapshot({ fetcher, now, signal });
-  active(signal);
   const head = blockNumber ?? await provider.getBlockNumber();
-  need(Number.isSafeInteger(head) && head > 0 && source.blockNumber <= head && head - source.blockNumber <= 1_200,
-    'Official snapshot is outside the chain read window.');
-  const chain = read ?? defaultRead(provider, head);
+  need(Number.isSafeInteger(head) && head > 0,'Official read block is invalid.');
+  const chain = read ?? await defaultRead(provider, head, signal);
   const [chainId, headIdRaw, hash] = await Promise.all([chain.chainId(), chain.nextListingId(), chain.blockHash()]);
   active(signal);
   need(uint(chainId, 'chain ID') === 56n, 'Budget market scan requires BSC mainnet.');
   need(/^0x[0-9a-fA-F]{64}$/.test(hash ?? ''), 'Missing pinned BSC block hash.');
   const headId = uint(headIdRaw, 'latest listing ID');
-  need(headId >= BigInt(source.maxId) && headId - BigInt(source.maxId) <= BigInt(maxNewListings),
-    'Official snapshot omitted too many recent listings.');
-  const prior = source.listings.map(row => listing(row, BigInt(source.maxId))).filter(Boolean);
-  need(prior.length <= maxActive, 'Official market has too many active listings for complete review.');
-
+  need(headId<=BigInt(maxHistoricalListings),'Official market history exceeds the bounded complete-scan limit.');
+  // Enumerate every on-chain ID. An off-chain snapshot cannot prove that an old live listing was not omitted.
+  const width=read?8:MAX_READ_BATCH*MAX_READ_CONCURRENCY;
   const current = [];
-  for (let offset = 0; offset < prior.length; offset += 8) {
+  for (let id = 1n; id <= headId; id += BigInt(width)) {
     active(signal);
-    const batch = await Promise.all(prior.slice(offset, offset + 8).map(async earlier => {
-      const latest = listing(await chain.listingView(earlier.id), headId);
-      if (latest && keyOf(latest) !== keyOf(earlier)) throw new Error('Official listing changed miner identity.');
-      return latest;
-    }));
-    active(signal);
-    current.push(...batch.filter(Boolean));
-  }
-  for (let id = BigInt(source.maxId) + 1n; id <= headId; id += 8n) {
-    active(signal);
-    const count = Number(headId - id + 1n < 8n ? headId - id + 1n : 8n);
+    const count = Number(headId - id + 1n < BigInt(width) ? headId - id + 1n : BigInt(width));
     const batch = await Promise.all(Array.from({ length: count }, (_, index) => chain.listingView(id + BigInt(index))));
     active(signal);
     current.push(...batch.map(row => listing(row, headId)).filter(Boolean));
+    need(current.length<=maxActive,'Official market has too many active listings for complete review.');
   }
 
   const latestByMiner = new Map();
@@ -114,11 +100,13 @@ export async function discoverOfficialBudgetCandidates({ provider, read, fetcher
     const key = keyOf(row);
     if (!latestByMiner.has(key) || latestByMiner.get(key).id < row.id) latestByMiner.set(key, row);
   }
-  const distinct = [...latestByMiner.values()];
+  // Price pruning is safe only after every listing price was read from this pinned on-chain block.
+  const distinct = [...latestByMiner.values()].filter(row=>row.costWei<=absolute);
   const qualified = [];
-  for (let offset = 0; offset < distinct.length; offset += 8) {
+  const proofWidth=read?8:128;
+  for (let offset = 0; offset < distinct.length; offset += proofWidth) {
     active(signal);
-    const batch = await Promise.all(distinct.slice(offset, offset + 8).map(async row => {
+    const batch = await Promise.all(distinct.slice(offset, offset + proofWidth).map(async row => {
       const [canonical, owner, miner] = await Promise.all([
         chain.listingFor(row.collection, row.tokenId),
         chain.ownerOf(row.collection, row.tokenId),
@@ -150,7 +138,6 @@ export async function discoverOfficialBudgetCandidates({ provider, read, fetcher
     'BSC block changed during budget market scan.');
   return Object.freeze({ candidates: Object.freeze(qualified), snapshot: Object.freeze({
     complete: true, blockNumber: head, blockHash: hash, observedAt: now,
-    officialSourceBlock: source.blockNumber, officialGeneratedAt: source.generatedAt,
-    scannedListings: prior.length + Number(headId - BigInt(source.maxId)),
+    coverage:'all-chain-listing-ids',scannedListings:Number(headId),activeListings:current.length,qualifiedForProof:distinct.length,
   }) });
 }

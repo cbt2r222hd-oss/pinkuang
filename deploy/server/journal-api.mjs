@@ -9,6 +9,7 @@ import { decodeFirstoOrder, verifyFirstoSignedAsk } from '../src/firsto-purchase
 import { fetchOfficialCandidates } from '../scripts/official-market-discovery.mjs';
 import { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI, verifyPortfolioIntent } from './portfolio-intent.mjs';
 import { verifyControlledFirstoSale } from './firsto-sale-preflight.mjs';
+import { readBudgetCandidates } from './budget-candidates.mjs';
 export { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI } from './portfolio-intent.mjs';
 
 const MAX_BODY = 64 * 1024;
@@ -17,7 +18,7 @@ const SESSION_MS = 12 * 60 * 60_000;
 const TOKEN_COOKIE = 'pinkuang_journal';
 const OFFICIAL_CACHE_MS = 5_000;
 const OFFICIAL_GRAPH_CACHE_MS = 5_000;
-const OFFICIAL_SCAN_MS = 30_000;
+const OFFICIAL_SCAN_MS = 60_000;
 const OFFICIAL_RPC_TIMEOUT_MS = 9_000;
 const MAX_OFFICIAL_SCANS = 2;
 const MAX_OFFICIAL_GRAPH_PROOFS = 2;
@@ -718,7 +719,7 @@ export function createBoundedOfficialProvider(url, timeoutMs = OFFICIAL_RPC_TIME
 export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = false,
   provider: suppliedProvider, currentArtifactDigest, assertSigningInputsCurrent = () => {}, allowedProductFactories = [], productDeploymentRecordPath,
   productDeploymentRecord, productArtifactBundle, productGraphVerifier,
-  officialCandidateDiscovery = fetchOfficialCandidates, officialSnapshotFetch = fetch,
+  officialCandidateDiscovery = fetchOfficialCandidates, officialSnapshotFetch = fetch, budgetCandidateDiscovery = readBudgetCandidates,
   officialScanTimeoutMs = OFFICIAL_SCAN_MS, now = Date.now, notificationService,
   genesisRecordPath, genesisBundlePath, genesisRecord, genesisBundle } = {}) {
   if (typeof dbPath !== 'string' || !dbPath) throw new Error('Journal database path is required.');
@@ -744,6 +745,7 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
   const productMode = Boolean(trustedProduct) || typeof productGraphVerifier === 'function' && productFactories.size > 0;
   const inFlight = new Set();
   const officialCache = new Map(), officialScans = new Map();
+  const publicDiscoveryJobs = new Map();
   const officialGraphCache = new Map(), officialGraphProofs = new Map();
   let officialTokens = OFFICIAL_REQUEST_BURST, officialRefillAt = now(), activeOfficialScans = 0;
   let activeOfficialGraphProofs = 0, officialGraphTokens = OFFICIAL_GRAPH_PROOF_BURST;
@@ -946,6 +948,85 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
     }
   }
 
+  async function budgetCandidates(url) {
+    const keys=[...url.searchParams.keys()];
+    if(keys.length!==3 || new Set(keys).size!==3 || keys.some(key=>!['parent','block','hash'].includes(key)))
+      fail(400,'Exactly parent, block and hash are required.');
+    const parent=identity(url.searchParams.get('parent')), number=Number(url.searchParams.get('block')), hash=url.searchParams.get('hash')?.toLowerCase();
+    if(parent==='0x0000000000000000000000000000000000000000' || !/^[1-9]\d*$/.test(url.searchParams.get('block')??'') || !Number.isSafeInteger(number) || !HASH.test(hash??''))
+      fail(400,'Invalid budget parent or pinned block.');
+    consumeOfficialBudget();
+    const factory=trustedProduct?.record?.kind==='integrated-v2' ? trustedProduct.record.addresses.portfolioFactory :
+      typeof productGraphVerifier==='function' && productFactories.size===1 ? [...productFactories][0] : null;
+    if(!officialProvider || !productMode || !factory || !productFactories.has(identity(factory))) fail(503,'Reviewed budget Factory is unavailable.');
+    try {
+      if(BigInt(await officialProvider.send('eth_chainId',[]))!==56n) fail(503,'Product RPC is not BSC mainnet.');
+      const latest=await officialProvider.getBlock('latest');
+      if(!Number.isSafeInteger(latest?.number) || number>latest.number || latest.number-number>MAX_OFFICIAL_BLOCK_AGE) fail(409,'Budget block is outside the recent purchase window.');
+      const block=await pinnedOfficialBlock(number,hash), graph=await verifiedOfficialGraph(factory,block,hash);
+      const key=`budget:${parent}:${hash}`, cached=officialCache.get(key);
+      if(cached?.expires>now()){await pinnedOfficialBlock(number,hash);return cached.result;}
+      let scan=officialScans.get(key);
+      if(!scan){
+        if(activeOfficialScans>=MAX_OFFICIAL_SCANS) fail(503,'Official market scan is busy; retry shortly.');
+        activeOfficialScans++; const abort=new AbortController();
+        const work=Promise.resolve().then(()=>budgetCandidateDiscovery({provider:officialProvider,parent,factory,graph,block,
+          signal:abort.signal,fetcher:officialSnapshotFetch,now:now()}));
+        work.finally(()=>{activeOfficialScans--;}).catch(()=>{});
+        scan=Promise.race([work,new Promise((_,reject)=>{const timer=setTimeout(()=>{abort.abort();reject(new Error('Budget scan timed out.'));},officialScanTimeoutMs);
+          work.finally(()=>clearTimeout(timer)).catch(()=>{});})]);
+        officialScans.set(key,scan);scan.finally(()=>{if(officialScans.get(key)===scan)officialScans.delete(key);}).catch(()=>{});
+      }
+      const result=await scan;
+      if(result?.complete!==true || identity(result.parent)!==parent || identity(result.factory)!==identity(factory)
+        || result.chainId!==56 || identity(result.legacyFactory)!==identity(graph.legacyFactory)
+        || result.artifactDigest?.toLowerCase()!==graph.artifactDigest.toLowerCase() || result.snapshot?.complete!==true
+        || result.snapshot?.blockNumber!==number || result.snapshot?.blockHash?.toLowerCase()!==hash || !Array.isArray(result.candidates))
+        fail(503,'Complete budget market scan unavailable.');
+      await pinnedOfficialBlock(number,hash);
+      officialCache.set(key,{result,expires:now()+OFFICIAL_CACHE_MS});
+      if(officialCache.size>64)officialCache.delete(officialCache.keys().next().value);
+      return result;
+    } catch(error){if(error instanceof ApiError)throw error;fail(503,'Complete budget market scan unavailable; Firsto fallback is not authorized.');}
+  }
+
+  /** Public read jobs have no nonce, session, signing permission or caller-selected RPC target. */
+  async function discoveryResponse(url,kind){
+    const discover=kind==='budget'?budgetCandidates:officialCandidates;
+    if(!url.searchParams.has('async'))return {status:200,body:await discover(url)};
+    if(url.searchParams.getAll('async').length!==1||url.searchParams.get('async')!=='1')fail(400,'Invalid discovery mode.');
+    const clean=new URL(url);clean.searchParams.delete('async');
+    const field=kind==='budget'?'parent':'pool',keys=[...clean.searchParams.keys()];
+    if(keys.length!==3||new Set(keys).size!==3||keys.some(key=>![field,'block','hash'].includes(key)))fail(400,'Invalid discovery query.');
+    const target=identity(clean.searchParams.get(field)),number=Number(clean.searchParams.get('block')),hash=clean.searchParams.get('hash')?.toLowerCase();
+    if(target==='0x0000000000000000000000000000000000000000'||!/^[1-9]\d*$/.test(clean.searchParams.get('block')??'')
+      ||!Number.isSafeInteger(number)||!HASH.test(hash??''))fail(400,'Invalid discovery identity.');
+    const key=`${kind}:${target}:${hash}`;let job=publicDiscoveryJobs.get(key);
+    if(job?.expires<=now()){publicDiscoveryJobs.delete(key);job=null;}
+    if(!job){
+      if(publicDiscoveryJobs.size>=64){for(const [id,entry] of publicDiscoveryJobs)if(entry.expires<=now())publicDiscoveryJobs.delete(id);
+        if(publicDiscoveryJobs.size>=64)fail(503,'Discovery queue is full; retry shortly.');}
+      job={status:'scanning',expires:Infinity};publicDiscoveryJobs.set(key,job);
+      const finish=(status,value)=>{if(job.status!=='scanning')return;job.status=status;job.expires=now()+OFFICIAL_CACHE_MS;
+        if(status==='complete')job.body=value;else job.error=value;};
+      const timer=setTimeout(()=>{try{fail(503,'Complete discovery deadline exceeded; refresh the preview.');}catch(error){finish('failed',error);}},OFFICIAL_SCAN_MS);
+      const pending=discover(clean).then(body=>finish('complete',body),error=>finish('failed',error)).finally(()=>clearTimeout(timer));
+      inFlight.add(pending);pending.finally(()=>inFlight.delete(pending));
+      // Return quickly even when a full chain scan needs many RPC batches.
+      await Promise.race([pending,new Promise(resolve=>setTimeout(resolve,10))]);
+    }else{
+      consumeOfficialBudget();
+      if(!officialProvider)fail(503,'Product RPC is unavailable.');
+      const [chain,,latest]=await Promise.all([officialProvider.send('eth_chainId',[]),pinnedOfficialBlock(number,hash),officialProvider.getBlock('latest')]);
+      if(BigInt(chain)!==56n)fail(503,'Product RPC is not BSC mainnet.');
+      if(!Number.isSafeInteger(latest?.number)||number>latest.number||latest.number-number>MAX_OFFICIAL_BLOCK_AGE){
+        publicDiscoveryJobs.delete(key);fail(409,'Discovery block aged out; refresh the purchase preview.');}
+    }
+    if(job.status==='failed'){publicDiscoveryJobs.delete(key);throw job.error;}
+    if(job.status==='complete')return {status:200,body:job.body};
+    return {status:202,body:{complete:false,status:'scanning',chainId:56,[field]:getAddress(target),blockNumber:String(number),blockHash:hash,retryAfterMs:2000}};
+  }
+
   async function respond(req, res) {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
@@ -971,8 +1052,10 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
       if (method !== 'GET' && req.headers.origin !== origin) fail(403, 'Request origin is not allowed.');
       if (method === 'GET' && path === '/api/journal/notifications/capabilities')
         return send(200, notificationService?.capabilities() ?? { enabled: false, botUsername: 'BEMineNotifyBot' });
-      if (method === 'GET' && path === '/api/journal/official-candidates')
-        return send(200, await officialCandidates(url));
+      if (method === 'GET' && ['/api/journal/official-candidates','/api/journal/budget-candidates'].includes(path)){
+        const response=await discoveryResponse(url,path.endsWith('/budget-candidates')?'budget':'official');
+        return send(response.status,response.body);
+      }
       if (method === 'POST' && path === '/api/journal/challenge') {
         const body = await readJson(req), account = identity(body.account);
         const nonce = randomBytes(24).toString('base64url');

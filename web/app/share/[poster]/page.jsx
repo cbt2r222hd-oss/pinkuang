@@ -13,7 +13,7 @@ export async function generateMetadata({ params }) {
   if (!artwork) notFound();
   const title = '拼矿 BEMine · 矿友的邀请';
   const description = '一起了解 TapeOut 矿机，分享共同参与的乐趣。Explore a shared mining adventure with BEMine.';
-  const image = `https://tapeout.cc.cd/bemine/images/${artwork.base}.jpg`;
+  const image = `https://tapeout.cc.cd${process.env.NEXT_PUBLIC_BASE_PATH || '/bemine'}/images/${artwork.base}.jpg`;
   return {
     title, description,
     robots: { index: false, follow: false },

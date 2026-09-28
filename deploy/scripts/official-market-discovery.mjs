@@ -1,4 +1,5 @@
-import { Contract, ZeroAddress, getAddress } from 'ethers';
+import { Contract, Interface, ZeroAddress, getAddress } from 'ethers';
+import { createBudgetMulticallReader, MAX_READ_BATCH, MAX_READ_CONCURRENCY } from './budget-multicall-read.mjs';
 
 export const OFFICIAL_SNAPSHOT_URL = 'https://tapeout.net/circuit-market.json';
 export const OFFICIAL_MARKET = '0x6feEbbEbC07BcB90bd1Ac8b0CF9BaA4f0fF2B46f';
@@ -6,7 +7,8 @@ export const OFFICIAL_MINING = '0x7E2E0DC66a3bD9103E69b766afA62d9f7b697b46';
 export const MAX_OFFICIAL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 export const MAX_OFFICIAL_SNAPSHOT_AGE_MS = 6 * 60_000;
 export const MAX_NEW_LISTINGS = 128;
-export const MAX_ACTIVE_TARGET_LISTINGS = 1_000;
+export const MAX_ACTIVE_TARGET_LISTINGS = 10_000;
+export const MAX_HISTORICAL_LISTINGS = 100_000;
 
 const MARKET_ABI = [
   'function nextListingId() view returns(uint256)',
@@ -108,21 +110,23 @@ function parseListing(row, constraints, maxId, allowOverCap = false) {
   return { key, collection, tokenId, listingId, seller, priceWei };
 }
 
-function defaultRead(provider, blockNumber, signal) {
-  const market = new Contract(OFFICIAL_MARKET, MARKET_ABI, provider);
-  const mining = new Contract(OFFICIAL_MINING, MINING_ABI, provider);
-  const opts = { blockTag: blockNumber };
+async function defaultRead(provider, blockNumber, signal) {
+  const reader = await createBudgetMulticallReader({ provider, blockNumber, signal });
+  const market = new Interface(MARKET_ABI);
+  const mining = new Interface(MINING_ABI);
   return {
-    nextListingId: () => market.nextListingId(opts),
+    chainId: async () => BigInt(await provider.send('eth_chainId', [])),
+    blockHash: async () => (await provider.getBlock(blockNumber))?.hash,
+    nextListingId: async () => (await reader.call(OFFICIAL_MARKET, market, 'nextListingId'))[0],
     listingView: async id => {
-      const row = await market.listingView(id, opts);
+      const row = await reader.call(OFFICIAL_MARKET, market, 'listingView', [id]);
       return { id, seller: row.seller, circuits: row.circuits, circuitId: row.tokenId,
         price: row.price, valid: row.valid };
     },
     miner: async (collection, tokenId) => {
-      const key = await mining.minerKey(collection, tokenId, opts);
+      const key = (await reader.call(OFFICIAL_MINING, mining, 'minerKey', [collection, tokenId]))[0];
       live(signal);
-      return mining.getMiner(key, opts);
+      return (await reader.call(OFFICIAL_MINING, mining, 'getMiner', [key]))[0];
     },
   };
 }
@@ -148,6 +152,7 @@ const compare = (a, b, sort) => {
 /** All official candidates are checked before Firsto fallback. Every buy still needs fresh listingFor + Vault simulation. */
 export async function discoverOfficialMarketCandidates({ provider, constraints, fetcher = fetch, signal,
   now = Date.now(), blockNumber, read, sort = 'capacity', maxNewListings = MAX_NEW_LISTINGS,
+  maxHistoricalListings = MAX_HISTORICAL_LISTINGS,
   ...snapshotOptions }) {
   need(provider || read, 'A read-only BSC provider is required.');
   live(signal);
@@ -167,48 +172,47 @@ export async function discoverOfficialMarketCandidates({ provider, constraints, 
   };
   need(model.minVerifiedWeight > 0n && model.referenceVerifiedWeight > 0n && model.referencePriceWei > 0n && model.priceCap > 0n,
     'Invalid pool purchase constraints.');
-  const chain = read ?? defaultRead(provider, head, signal);
+  const chain = read ?? await defaultRead(provider, head, signal);
   live(signal);
-  const nextId = natural(await chain.nextListingId(), 'chain next listing ID');
+  const [nextIdRaw, chainId, hash] = await Promise.all([
+    chain.nextListingId(), chain.chainId?.(), chain.blockHash?.(),
+  ]);
+  const nextId = natural(nextIdRaw, 'chain next listing ID');
+  if (chain.chainId) need(natural(chainId, 'chain ID') === 56n, 'Official market scan requires BSC mainnet.');
+  if (chain.blockHash) need(/^0x[0-9a-fA-F]{64}$/.test(hash ?? ''), 'Missing pinned BSC block hash.');
   live(signal);
   // Despite its name, CircuitMarket.nextListingId() is the latest assigned ID.
   // The official UI starts its descending scan at nextListingId() + 1.
   need(nextId >= BigInt(source.maxId), 'Official snapshot is ahead of the chain listing head.');
   const unseen = nextId - BigInt(source.maxId);
   need(unseen <= BigInt(maxNewListings), 'Official snapshot omitted too many recent listings.');
-  const activeTargetListings = source.listings.map(row => parseListing(row, model, source.maxId, true)).filter(Boolean);
-  need(activeTargetListings.length <= MAX_ACTIVE_TARGET_LISTINGS, 'Official snapshot has too many active target listings.');
+  need(nextId <= natural(maxHistoricalListings, 'historical listing limit'), 'Official market history exceeds the bounded complete-scan limit.');
+  // The JSON snapshot is a freshness hint, never proof that every old live listing
+  // is present. Enumerate all IDs, including old orders omitted by the snapshot.
+  const width = read ? 8 : MAX_READ_BATCH * MAX_READ_CONCURRENCY;
   const rows = [];
-  // Re-read every active listing in the target collection. An older listing may have
-  // been repriced below the cap without increasing nextListingId().
-  for (let offset = 0; offset < activeTargetListings.length; offset += 8) {
+  let activeTargetCount = 0;
+  for (let id = 1n; id <= nextId; id += BigInt(width)) {
     live(signal);
-    const current = await Promise.all(activeTargetListings.slice(offset, offset + 8).map(async original => {
-      const live = parseListing(await chain.listingView(original.listingId), model, nextId, true);
-      if (live && live.key !== original.key) throw new Error('Official listing identity changed.');
-      return live && live.priceWei <= model.priceCap ? live : null;
-    }));
-    live(signal);
-    rows.push(...current.filter(Boolean));
-  }
-  for (let id = BigInt(source.maxId) + 1n; id <= nextId; id += 8n) {
-    live(signal);
-    const ids = Array.from({ length: Number(nextId - id + 1n < 8n ? nextId - id + 1n : 8n) }, (_, index) => id + BigInt(index));
+    const ids = Array.from({ length: Number(nextId - id + 1n < BigInt(width) ? nextId - id + 1n : BigInt(width)) }, (_, index) => id + BigInt(index));
     const batch = await Promise.all(ids.map(value => chain.listingView(value)));
     live(signal);
-    rows.push(...batch
-      .map(row => parseListing(row, model, nextId)).filter(Boolean));
+    const target = batch.map(row => parseListing(row, model, nextId, true)).filter(Boolean);
+    activeTargetCount += target.length;
+    need(activeTargetCount <= MAX_ACTIVE_TARGET_LISTINGS, 'Official market has too many active target listings for complete review.');
+    rows.push(...target);
   }
   const byMiner = new Map();
   for (const candidate of rows) {
     if (!byMiner.has(candidate.key) || candidate.listingId > byMiner.get(candidate.key).listingId)
       byMiner.set(candidate.key, candidate);
   }
-  const candidates = [...byMiner.values()];
+  const candidates = [...byMiner.values()].filter(candidate => candidate.priceWei <= model.priceCap);
   const qualified = [];
-  for (let offset = 0; offset < candidates.length; offset += 8) {
+  const proofWidth = read ? 8 : MAX_READ_BATCH * MAX_READ_CONCURRENCY;
+  for (let offset = 0; offset < candidates.length; offset += proofWidth) {
     live(signal);
-    const batch = await Promise.all(candidates.slice(offset, offset + 8).map(async candidate => {
+    const batch = await Promise.all(candidates.slice(offset, offset + proofWidth).map(async candidate => {
       const miner = await chain.miner(candidate.collection, candidate.tokenId);
       const verifiedWeight = isEligibleMiner(miner, candidate, model);
       if (verifiedWeight === false) return null;
@@ -220,11 +224,16 @@ export async function discoverOfficialMarketCandidates({ provider, constraints, 
     qualified.push(...batch.filter(Boolean));
   }
   live(signal);
+  const [finalChainId, finalHash] = await Promise.all([chain.chainId?.(), chain.blockHash?.()]);
+  live(signal);
+  if (chain.chainId) need(natural(finalChainId, 'final chain ID') === 56n, 'Official market chain changed during scan.');
+  if (chain.blockHash) need(finalHash === hash, 'BSC block changed during official market scan.');
   qualified.sort((a, b) => compare(a, b, sort));
   return { candidates: qualified, source: OFFICIAL_SNAPSHOT_URL, sourceBlock: source.blockNumber,
     generatedAt: new Date(source.generatedAt).toISOString(), chainBlock: head,
-    snapshotListings: source.listings.length, liveListingsChecked: activeTargetListings.length,
+    snapshotListings: source.listings.length, liveListingsChecked: activeTargetCount,
     recentListingsScanned: Number(unseen),
+    coverage: 'all-chain-listing-ids', chainListingsScanned: Number(nextId), chainHash: hash ?? null,
     modelChecked: candidates.length, nextListingId: nextId };
 }
 
@@ -243,6 +252,6 @@ export async function verifyOfficialSnapshotBoundary(provider, maxId, blockNumbe
 /** Keeper-compatible entry point. A failed/incomplete official read must not be treated as an empty market. */
 export async function fetchOfficialCandidates(provider, options, constraints, fetcher = fetch) {
   const result = await discoverOfficialMarketCandidates({ provider, constraints, fetcher, ...options });
-  return { ...result, scannedRows: result.snapshotListings + result.recentListingsScanned,
+  return { ...result, scannedRows: result.chainListingsScanned,
     maxId: result.nextListingId, complete: true };
 }

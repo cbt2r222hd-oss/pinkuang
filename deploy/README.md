@@ -4,6 +4,8 @@
 
 ## 本机运行
 
+手机扫码采用可选 WalletConnect 配置；未提供项目编号时继续使用浏览器扩展或钱包内置浏览器。配置与真实手机验收步骤见 [扫码连接说明](../docs/walletconnect-setup.md)。
+
 在仓库根目录执行 `npm ci --ignore-scripts`，然后：
 
 ```sh

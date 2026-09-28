@@ -64,17 +64,25 @@ test('changed owner or invalid mining quality is excluded before reaching the pl
   assert.equal(ownerChanged.candidates.length, 0);
 });
 
-test('repriced existing listing is read from chain, while missing or inconsistent coverage fails closed', async () => {
+test('repriced and snapshot-omitted listings are read from chain; bounded history and reorg fail closed', async () => {
   const fixture = setup({ head: 3n });
   fixture.rows[0].price = '900';
   fixture.read.listingView = async id => id === 1n ? row(1, 1, 90) : fixture.rows[Number(id) - 1];
   fixture.read.listingFor = async (_collection, tokenId) => ({ id: BigInt(tokenId), seller, price: BigInt(tokenId) === 1n ? 90n
     : BigInt(fixture.rows[Number(tokenId) - 1].price), valid: true });
   assert.deepEqual((await find(fixture)).candidates.map(item => item.tokenId), ['1', '2', '3']);
-  await assert.rejects(find(setup({ head: 300n })), /omitted too many/);
-  await assert.rejects(find(setup(), { blockNumber: 1301 }), /outside the chain read window/);
+  await assert.rejects(find(setup({ head: 100001n })), /bounded complete-scan/);
+  const omitted=setup();omitted.rows.shift();
+  omitted.read.listingView=async id=>row(Number(id));
+  omitted.read.listingFor=async (_collection,id)=>({id,seller,price:id*100n,valid:true});
+  assert.deepEqual((await find(omitted)).candidates.map(item=>item.tokenId),['1','2','3','4']);
   const invalid = await find(setup({ canonical: { valid: false } }));
   assert.equal(invalid.candidates.length, 0, 'invalid listings are filtered, not reported as verified');
   await assert.rejects(find(setup({ chainId: 1n })), /BSC mainnet/);
   await assert.rejects(find(setup({ reorg: true })), /block changed/);
+});
+
+test('full history scan does not trust or require the external market snapshot',async()=>{
+  const fixture=setup();const result=await find(fixture,{fetcher:async()=>{throw Error('snapshot unavailable');}});
+  assert.equal(result.snapshot.coverage,'all-chain-listing-ids');assert.equal(result.snapshot.scannedListings,4);
 });

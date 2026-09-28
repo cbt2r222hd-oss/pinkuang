@@ -40,7 +40,10 @@ import LiveGovernance from "./LiveGovernance";
 import LiveOperator from "./LiveOperator";
 import FirstoMarketBoard from "./FirstoMarketBoard";
 import LivePortfolios from "./LivePortfolios";
-import { preparePortfolioAction } from "../lib/live-portfolios.mjs";
+import { preparePortfolioAction, readPortfolioContext, readPortfolio } from "../lib/live-portfolios.mjs";
+import { prepareBudgetQueueStep, budgetQueuePreviewMatches } from "../lib/budget-purchase-plan.mjs";
+import PortfolioProjectShare from "./PortfolioProjectShare";
+import { walletConnectEnabled, walletConnectForPage } from "../lib/walletconnect.mjs";
 import WalletConnectModal, { WalletIcon } from "./WalletConnectModal";
 import { createWalletDiscovery, walletConnectionError } from "../lib/wallet-discovery.mjs";
 import { sameUnsignedIntent } from "../lib/ui-context.mjs";
@@ -198,7 +201,9 @@ export default function LivePlatform() {
     [walletUiReady, setWalletUiReady] = useState(false),
     [walletInfo, setWalletInfo] = useState(null),
     [connectingId, setConnectingId] = useState(null),
-    [connectionError, setConnectionError] = useState("");
+    [connectionError, setConnectionError] = useState(""),
+    [walletQr, setWalletQr] = useState(null);
+  const qrConnector = useRef(null);
   const [pools, setPools] = useState([]),
     [positions, setPositions] = useState([]),
     [stats, setStats] = useState(null),
@@ -252,6 +257,15 @@ export default function LivePlatform() {
     walletEpoch = useRef(0),
     activeModal = useRef(null);
   activeModal.current = modal;
+  useEffect(() => {
+    if (modal?.type !== 'connect-wallet') cancelWalletScan();
+  }, [modal]);
+  useEffect(() => () => {
+    const ticket = connectionLock.current;
+    connectionLock.current = null;
+    qrConnector.current?.cancel();
+    if (ticket?.remote && ticket.provider !== connectedWallet.current) void ticket.provider?.disconnect?.().catch(() => {});
+  }, []);
   const config =
     boot.status === "ready"
       ? { ...boot, ...boot.manifest, journalBase: boot.journalBase || "/api/journal" }
@@ -611,26 +625,39 @@ export default function LivePlatform() {
     discovery.current?.refresh();
     setModal(connectionLock.current?.target || { type: "connect-wallet" });
   }
-  async function selectWallet(entry) {
+  function cancelWalletScan() {
+    const ticket = connectionLock.current;
+    qrConnector.current?.cancel();
+    if (!ticket?.remote) return;
+    connectionLock.current = null;
+    setConnectingId(null); setWalletQr(null); setBusy(false);
+    if (ticket.provider !== connectedWallet.current) void qrConnector.current?.disconnect();
+  }
+  async function selectWallet(entry, remote = false) {
     if (connectionLock.current || busy || activeModal.current?.type !== "connect-wallet") return;
     // Keep the chosen concrete provider, never re-read a mutable window.ethereum here.
-    if (!discovery.current?.getWallets().some(item => item.id === entry.id && item.provider === entry.provider)) return;
-    const target = activeModal.current, ticket = { target }, context = walletEpoch.current;
+    if (!remote && !discovery.current?.getWallets().some(item => item.id === entry.id && item.provider === entry.provider)) return;
+    if (remote && (!walletConnectEnabled || entry.id !== 'walletconnect')) return;
+    const target = activeModal.current, ticket = { target, remote }, context = walletEpoch.current;
     connectionLock.current = ticket;
     setConnectingId(entry.id);
     setOperator(null);
     setConnectionError("");
+    setWalletQr(null);
     setBusy(true);
     const current = () => connectionLock.current === ticket && activeModal.current === target
       && context === walletEpoch.current;
     try {
-      const provider = entry.provider;
+      if (remote && !qrConnector.current) qrConnector.current = walletConnectForPage();
+      const provider = remote ? await qrConnector.current.connect({ onQr: image => { if (current()) setWalletQr(image); } }) : entry.provider;
+      ticket.provider = provider;
+      if (!current()) { if (remote && provider !== connectedWallet.current) await provider.disconnect?.().catch(() => {}); return; }
       const owner = await connectWallet(provider);
-      if (!current()) return;
+      if (!current()) { if (remote && provider !== connectedWallet.current) await provider.disconnect?.().catch(() => {}); return; }
       walletEpoch.current++;
       connectedWallet.current = provider;
       setWallet(provider);
-      setWalletInfo(entry);
+      setWalletInfo({ ...entry, provider });
       setAccount(getAddress(owner));
       setPrepared(null);
       setModal(null);
@@ -642,11 +669,13 @@ export default function LivePlatform() {
         ),
       );
     } catch (e) {
-      if (current()) setConnectionError(walletConnectionError(e, locale));
+      if (current() && e?.code !== 'WC_CANCELLED') setConnectionError(e?.code === 'WC_TIMEOUT'
+        ? L('扫码连接已超时，请重新扫码。', 'QR connection timed out. Please scan again.') : walletConnectionError(e, locale));
     } finally {
       if (connectionLock.current === ticket) {
         connectionLock.current = null;
         setConnectingId(null);
+        setWalletQr(null);
         setBusy(false);
         if (wallet && account) setRefresh(value => value + 1);
       }
@@ -784,6 +813,21 @@ export default function LivePlatform() {
     );
     const deposit = result.action === "deposit" && result.targetType !== 'portfolio'
       && !same(result.factory, config.portfolioFactory) ? result : null;
+    if (result.status === 'confirmed' && result.finalized === true && result.action === 'deposit'
+      && result.targetType === 'portfolio' && same(result.factory, config.portfolioFactory)
+      && result.poolAddress && result.transactionHash && lastConfirmed.current !== result.transactionHash) {
+      try {
+        const ctx = await readPortfolioContext(config, client.provider);
+        const project = await readPortfolio(ctx, result.poolAddress, account, { includeChildren: false });
+        await ctx.canonical();
+        if (context === walletEpoch.current) {
+          lastConfirmed.current = result.transactionHash;
+          setModal({ type: 'portfolio-share', pool: project, confirmation: result });
+        }
+      } catch {
+        if (context === walletEpoch.current) setMessage(L('认购已确认，项目资料暂时无法读取，请稍后从项目中分享。', 'Subscription confirmed. Project data is temporarily unavailable; share from the project later.'));
+      }
+    }
     if (
       result.status === "confirmed" &&
       deposit?.finalized &&
@@ -834,6 +878,31 @@ export default function LivePlatform() {
         action: checked.action, onState: state => { if (current()) showTransactionProgress(state); } });
       if (revision === walletEpoch.current) await handleResult(result, revision);
       return result;
+    } finally {
+      if (submissionLock.current === ticket) submissionLock.current = null;
+      setBusy(false); setTransactionStage(null);
+    }
+  }
+  async function sendBudgetQueueStep(confirmed, input) {
+    if (busy || submissionLock.current || !wallet || !account || pending) throw Object.assign(new Error(L('请先完成或核对当前操作。', 'Complete or verify the current operation first.')), { beforeWalletSubmission: true });
+    const ticket = {}, revision = walletEpoch.current, page = routeIdentity.current;
+    let enteredSender = false;
+    submissionLock.current = ticket; setBusy(true); setError('');
+    const current = () => revision === walletEpoch.current && page === routeIdentity.current;
+    try {
+      await connectJournal({ inspect: false, onState: state => { if (current()) showTransactionProgress(state); } });
+      if (!current()) throw new Error(L('页面或钱包已改变，请重新预览。', 'Page or wallet changed. Preview again.'));
+      const checked = await prepareBudgetQueueStep({ ...input, config, provider: wallet, account });
+      if (!current() || !budgetQueuePreviewMatches(confirmed, checked)) throw new Error(L('采购内容已改变，请重新预览。', 'Purchase details changed. Preview again.'));
+      enteredSender = true;
+      const result = await sendProductTransaction({ provider: wallet, config, transaction: checked.transaction,
+        action: checked.action, onState: state => { if (current()) showTransactionProgress(state); } });
+      if (revision === walletEpoch.current) await handleResult(result, revision);
+      return result;
+    } catch (problem) {
+      // This proof is local to this call; never infer it from a timeout or empty journal.
+      if (!enteredSender) throw Object.assign(new Error(textError(problem)), { beforeWalletSubmission: true });
+      throw problem;
     } finally {
       if (submissionLock.current === ticket) submissionLock.current = null;
       setBusy(false); setTransactionStage(null);
@@ -2375,6 +2444,7 @@ export default function LivePlatform() {
           {['pools','overview','rewards','governance','market','portfolio'].includes(route.route) && <LivePortfolios
             config={config} provider={client?.provider} client={client} locale={locale} account={account} wallet={wallet} mode={route.route} initialPool={route.route === 'portfolio' ? route.pool : null}
             disabled={loading || busy || !!pending} onConnect={connect} onSend={sendPortfolio}
+            onShare={pool => setModal({ type: 'portfolio-share', pool })}
             onBuyChild={pool => openAction('completeFirstoSale', { pool })} refreshKey={refresh}/>}
 
           {route.route === "governance" && (
@@ -2436,8 +2506,9 @@ export default function LivePlatform() {
             {isOperator && <LiveOperator key={`${config?.factory}:${account}:${walletRevision}:${refresh}`} config={config} wallet={wallet} account={account}
               operator={operator} disabled={loading || busy || !!pending} onSend={sendAdminAction}
               onRefresh={() => setRefresh(value => value + 1)}/>}
-            <LivePortfolios config={config} provider={client?.provider} account={account} wallet={wallet} mode="operator"
+            <LivePortfolios config={config} provider={client?.provider} account={account} wallet={wallet} mode="operator" locale={locale}
               disabled={loading || busy || !!pending} onConnect={connect} onSend={sendPortfolio}
+              onSendQueue={sendBudgetQueueStep} onShare={pool => setModal({ type: 'portfolio-share', pool })}
               onBuyChild={pool => openAction('completeFirstoSale', { pool })} refreshKey={refresh}/>
           </> : <section className="panel" data-operator-access={operatorAccess}>
             <Empty title={operatorAccess === 'checking'
@@ -2516,13 +2587,13 @@ export default function LivePlatform() {
           }}
         >
           <section
-            className={`modal live-modal${modal.type === "share" ? " live-share-modal" : ""}`}
+            className={`modal live-modal${['share','portfolio-share'].includes(modal.type) ? " live-share-modal" : ""}`}
             ref={modalRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="live-dialog-title"
           >
-            {modal.type !== "share" && (
+            {!['share','portfolio-share'].includes(modal.type) && (
               <button
                 className="modal-close icon-button"
                 disabled={modal.type === "connect-wallet" ? false : loading || busy}
@@ -2539,7 +2610,14 @@ export default function LivePlatform() {
               <WalletConnectModal wallets={wallets} onSelect={selectWallet}
                 onRefresh={() => discovery.current?.refresh()} pendingId={connectingId}
                 error={connectionError} locale={locale}
+                qrEnabled={walletConnectEnabled} qrImage={walletQr}
+                onScan={() => selectWallet({ id: 'walletconnect', name: 'WalletConnect' }, true)}
+                onCancelScan={cancelWalletScan}
                 dappUrl={typeof window === 'undefined' ? publicBaseUrl : window.location.href} />
+            ) : modal.type === 'portfolio-share' ? (
+              <><h2 id="live-dialog-title" className="sr-only">{L('分享多矿机项目', 'Share a multi-miner portfolio')}</h2>
+                <PortfolioProjectShare locale={locale} publicBaseUrl={publicBaseUrl} project={modal.pool}
+                  confirmation={modal.confirmation} onDismiss={() => setModal(null)} /></>
             ) : modal.type === "share" ? (
               <>
                 <h2 id="live-dialog-title" className="sr-only">
@@ -2567,6 +2645,7 @@ export default function LivePlatform() {
                     secondary
                     disabled={loading || busy}
                     onClick={() => {
+                      if (walletInfo?.id === 'walletconnect') void qrConnector.current?.disconnect();
                       epoch.current++;
                       walletEpoch.current++;
                       setOperator(null);

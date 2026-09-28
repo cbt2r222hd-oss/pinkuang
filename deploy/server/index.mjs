@@ -13,7 +13,7 @@ const types = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charse
 export function createDeploymentServer({ journalService, liveDataProxy } = {}) { return createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','no-referrer');
-  res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https: wss://relay.walletconnect.com wss://relay.walletconnect.org; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
   let pathname;
   try { pathname = new URL(req.url, 'http://localhost').pathname; }
   catch { res.statusCode = 400; res.end('Invalid request URL'); return; }

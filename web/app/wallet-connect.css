@@ -16,3 +16,4 @@
 [data-appearance="dark"] .wallet-connect-error{background:#362922;color:#edb191;border-color:#664b3b}[data-appearance="dark"] .wallet-connect-status{background:#332e20;color:#e2ce83;border-color:#645733}
 @media(max-width:480px){.wallet-connect h2{font-size:24px}.wallet-catalog{gap:7px}.wallet-catalog-option{padding:9px 8px;gap:7px}.wallet-catalog-option strong{font-size:10px}.wallet-connect-intro{font-size:12px}.wallet-connect-option{padding:12px}.wallet-connect-footnote{font-size:9px}}
 @media(prefers-reduced-motion:reduce){.wallet-spin{animation:none}}
+.wallet-qr-choice{margin:16px 0}.wallet-qr-panel{display:flex;flex-direction:column;align-items:center;gap:12px;padding:16px 0}.wallet-qr-panel img{max-width:100%;height:auto;border-radius:12px;background:#fff}.wallet-qr-panel p{font-size:13px;padding:24px 0}

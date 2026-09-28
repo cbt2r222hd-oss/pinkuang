@@ -202,7 +202,8 @@ test('automatic flexible-pool fallback requires a complete scan and unchanged of
     maxId: 7, marketAddr: OFFICIAL_MARKET, listings: [] };
   const fetcher = async url => String(url).includes('tapeout.net') ? Response.json(officialFeed) : feed()();
   const autoOptions = { ...options(journal), venue: 'auto',
-    read: { nextListingId: async () => state.officialMaxId } };
+    read: { nextListingId: async () => state.officialMaxId,
+      listingView: async id => ({ id, valid: false }) } };
   const ready = await runKeeperCycle(provider, autoOptions, null, fetcher, runtime);
   assert.equal(ready.status, 'dry-run-ready');
   assert.equal(ready.firstoTotalCostWei, '1010');

@@ -18,6 +18,8 @@ function fixture() {
   write('server/index.mjs', "import '../scripts/official-market-discovery.mjs';\nimport '../src/firsto-purchase.mjs';\nexport const ready=true;\n");
   write('shared/proof.mjs', 'export const proof=true;');
   write('scripts/official-market-discovery.mjs', 'export const readOnly=true;');
+  write('scripts/budget-official-discovery.mjs', "import './official-market-discovery.mjs'; import './budget-multicall-read.mjs'; export const budgetReadOnly=true;");
+  write('scripts/budget-multicall-read.mjs', 'export const batchReadOnly=true;');
   write('src/firsto-purchase.mjs', 'export const exchange=true;');
   write('package.json', '{"type":"module"}'); write('package-lock.json', '{}');
   return { deployDir, outDir, sourceHead, write, digest };
@@ -28,7 +30,7 @@ test('release directory includes runtime discovery and index artifact, with veri
   f.write('scripts/purchase-keeper.mjs', 'throw new Error("must not package keeper");');
   const result = packageRelease(f), manifest = JSON.parse(readFileSync(join(f.outDir, 'release-manifest.json')));
   assert.equal(result.artifactDigest, f.digest); assert.equal(manifest.transactionCount, 16);
-  assert.deepEqual(manifest.runtimeScripts, ['scripts/official-market-discovery.mjs']);
+  assert.deepEqual(manifest.runtimeScripts, ['scripts/official-market-discovery.mjs','scripts/budget-official-discovery.mjs','scripts/budget-multicall-read.mjs']);
   assert.deepEqual(manifest.runtimeSources, ['src/firsto-purchase.mjs']);
   assert(!existsSync(join(f.outDir, 'scripts/purchase-keeper.mjs')));
   assert(existsSync(join(f.outDir, 'public/deployment-artifacts.json')));

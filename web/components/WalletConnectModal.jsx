@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from 'react';
-import { ArrowUpRight, Check, Copy, ExternalLink, LoaderCircle, RefreshCw, ShieldCheck, Smartphone, Wallet } from 'lucide-react';
+import { ArrowUpRight, Check, Copy, ExternalLink, LoaderCircle, QrCode, RefreshCw, ShieldCheck, Smartphone, Wallet } from 'lucide-react';
 import { WALLET_BRANDS, mobileWalletLink } from '../lib/wallet-discovery.mjs';
 import '../app/wallet-connect.css';
 
@@ -11,11 +11,11 @@ export function WalletIcon({ wallet, size = 36 }) {
   const src = wallet?.icon || (brandId ? `${basePath}/wallets/${brandId}.${brandId === 'trust' ? 'svg' : 'png'}` : null);
   useEffect(() => setFailed(false), [src]);
   return <span className="wallet-brand-icon" style={{ width: size, height: size }} aria-hidden="true">
-    {src && !failed ? <img src={src} alt="" width={size} height={size} onError={() => setFailed(true)} /> : <Wallet size={Math.round(size * .66)} />}
+    {wallet?.id === 'walletconnect' ? <QrCode size={Math.round(size * .75)} /> : src && !failed ? <img src={src} alt="" width={size} height={size} onError={() => setFailed(true)} /> : <Wallet size={Math.round(size * .66)} />}
   </span>;
 }
 
-export default function WalletConnectModal({ wallets, onSelect, onRefresh, pendingId, error, locale = 'zh', dappUrl }) {
+export default function WalletConnectModal({ wallets, onSelect, onRefresh, pendingId, error, locale = 'zh', dappUrl, qrEnabled = false, onScan, qrImage, onCancelScan }) {
   const L = (zh, en) => locale === 'en' ? en : zh;
   const [mobile, setMobile] = useState(false), [copied, setCopied] = useState(false), [copyFailed, setCopyFailed] = useState(false);
   useEffect(() => setMobile(/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
@@ -32,7 +32,14 @@ export default function WalletConnectModal({ wallets, onSelect, onRefresh, pendi
     <p className="wallet-connect-intro">{L('选择你要使用的钱包，在钱包中确认连接。', 'Choose a wallet, then approve the connection in your wallet.')}</p>
     {error && <div className="wallet-connect-error" role="alert">{error}</div>}
     {pendingId && <div className="wallet-connect-status" role="status"><LoaderCircle size={18} className="wallet-spin" />
-      <span>{L('请打开所选钱包，确认连接或网络切换请求。', 'Open the selected wallet to approve connection or network switching.')}</span></div>}
+      <span>{pendingId === 'walletconnect' ? L('请使用手机钱包扫描二维码，并在钱包中确认。', 'Scan with your mobile wallet and approve in the wallet.') : L('请打开所选钱包，确认连接或网络切换请求。', 'Open the selected wallet to approve connection or network switching.')}</span></div>}
+    {pendingId === 'walletconnect' && <div className="wallet-qr-panel">
+      {qrImage ? <img src={qrImage} width="288" height="288" alt={L('WalletConnect 连接二维码', 'WalletConnect connection QR code')} /> : <p role="status">{L('正在准备连接二维码…', 'Preparing connection QR code…')}</p>}
+      <button type="button" className="wallet-copy" onClick={onCancelScan}>{L('取消扫码', 'Cancel QR connection')}</button>
+    </div>}
+    {qrEnabled && !pendingId && <button type="button" className="wallet-connect-option wallet-qr-choice" onClick={onScan}>
+      <WalletIcon wallet={{ id: 'walletconnect' }} /><span className="wallet-connect-name"><strong>WalletConnect</strong><small>{L('用手机钱包扫码连接', 'Connect a mobile wallet by QR code')}</small></span><QrCode size={20} />
+    </button>}
     <div className="wallet-connect-section"><h3>{L('此浏览器中的钱包', 'Wallets in this browser')}</h3>
       <button type="button" className="wallet-discover" disabled={!!pendingId} onClick={onRefresh}><RefreshCw size={14} />{L('重新检测', 'Detect again')}</button></div>
     {wallets.length ? <div className="wallet-connect-list">{wallets.map(wallet => <button type="button" key={wallet.id}

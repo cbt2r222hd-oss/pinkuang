@@ -54,7 +54,7 @@ test('official discovery resolves new listing IDs and checks exact miner model, 
   const reads = [];
   const onchain = {
     nextListingId: async () => 5n,
-    listingView: async id => { reads.push(['listingView', id]); return listing(id, Number(id), id === 5n ? '500' : id === 2n ? '800' : '900'); },
+    listingView: async id => { reads.push(['listingView', id]); return listing(id, Number(id), id === 5n ? '500' : id === 2n ? '800' : '900', id === 3n ? otherCollection : collection); },
     miner: async (_collection, tokenId) => {
       reads.push(['miner', tokenId]);
       if (tokenId === 2n) return miner(tokenId, { verifWeight: 100n }); // 800 > reference unit cap 500
@@ -71,7 +71,8 @@ test('official discovery resolves new listing IDs and checks exact miner model, 
   assert.deepEqual(found.candidates.map(row => row.tokenId), [4n, 1n], 'lower price per verified weight ranks first');
   assert(found.candidates.every(row => row.discoverySource === 'TapeOut official snapshot'));
   assert(found.candidates.every(row => row.discoveryVenue === 'official'));
-  assert.deepEqual(reads.filter(row => row[0] === 'listingView').map(row => row[1]), [1n, 2n, 4n, 5n]);
+  assert.deepEqual(reads.filter(row => row[0] === 'listingView').map(row => row[1]), [1n, 2n, 3n, 4n, 5n]);
+  assert.equal(found.coverage, 'all-chain-listing-ids');
 });
 
 test('an existing official listing repriced below the cap is found even without a new listing ID', async () => {
@@ -151,4 +152,69 @@ test('enumeration boundary uses the on-chain nextListingId at one block', async 
   const lagged = await verifyOfficialSnapshotBoundary(provider, 3);
   assert.equal(lagged.complete, false);
   assert.equal(lagged.unseenListings, 3n);
+});
+
+test('an old live order omitted by the JSON snapshot is still discovered before Firsto fallback', async () => {
+  const found = await discoverOfficialMarketCandidates({ now, blockNumber: 101, constraints,
+    fetcher: async () => response(fixture([listing(3)], { maxId: 3 })),
+    read: { nextListingId: async () => 3n,
+      listingView: async id => listing(id, id, id === 1n ? '300' : '900'),
+      miner: async (_collection, tokenId) => miner(tokenId, { taskId: tokenId === 1n ? 42n : 43n }),
+    },
+  });
+  assert.deepEqual(found.candidates.map(row => row.tokenId), [1n]);
+  assert.equal(found.chainListingsScanned, 3);
+  assert.equal(found.snapshotListings, 1);
+});
+
+test('more than 1000 active target miners are fully scanned instead of being truncated', async () => {
+  const count = 1100, seen = [];
+  const found = await discoverOfficialMarketCandidates({ now, blockNumber: 101, constraints,
+    fetcher: async () => response(fixture([], { maxId: count })),
+    read: { nextListingId: async () => BigInt(count),
+      listingView: async id => { seen.push(id); return listing(id); },
+      miner: async (_collection, tokenId) => miner(tokenId, { taskId: tokenId === BigInt(count) ? 42n : 43n }),
+    },
+  });
+  assert.equal(seen.length, count);
+  assert.equal(found.liveListingsChecked, count);
+  assert.deepEqual(found.candidates.map(row => row.tokenId), [1100n]);
+});
+
+test('newer over-cap order cannot resurrect an older cheaper order for the same miner', async () => {
+  let modelReads = 0;
+  const found = await discoverOfficialMarketCandidates({ now, blockNumber: 101, constraints,
+    fetcher: async () => response(fixture([], { maxId: 2 })),
+    read: { nextListingId: async () => 2n,
+      listingView: async id => listing(id, 1, id === 1n ? '100' : '2000'),
+      miner: async () => { modelReads++; return miner(1); },
+    },
+  });
+  assert.equal(found.candidates.length, 0);
+  assert.equal(modelReads, 0);
+});
+
+test('complete enumeration keeps a hard history limit and fails before market calls beyond it', async () => {
+  let reads = 0;
+  await assert.rejects(discoverOfficialMarketCandidates({ now, blockNumber: 101, constraints,
+    fetcher: async () => response(fixture([], { maxId: 100001 })),
+    read: { nextListingId: async () => 100001n,
+      listingView: async () => { reads++; return listing(1); },
+    },
+  }), /complete-scan limit/);
+  assert.equal(reads, 0);
+});
+
+test('pinned header or chain changes never produce a complete official result', async () => {
+  const hash = `0x${'ab'.repeat(32)}`;
+  for (const change of ['block', 'chain']) {
+    let headerReads = 0, chainReads = 0;
+    await assert.rejects(discoverOfficialMarketCandidates({ now, blockNumber: 101, constraints,
+      fetcher: async () => response(fixture([], { maxId: 1 })),
+      read: { nextListingId: async () => 1n, listingView: async () => listing(1), miner: async () => miner(1),
+        chainId: async () => ++chainReads > 1 && change === 'chain' ? 1n : 56n,
+        blockHash: async () => ++headerReads > 1 && change === 'block' ? `0x${'cd'.repeat(32)}` : hash,
+      },
+    }), /changed/);
+  }
 });
