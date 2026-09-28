@@ -119,6 +119,7 @@ export class ChainIndex {
     this.observedSafeHead = null;
     this.checkedAt = null;
     this.syncing = false;
+    this.syncSettled = null;
     this.cachedStats = null;
   }
 
@@ -138,6 +139,14 @@ export class ChainIndex {
       complete: this.ready && this.lastError === null && indexedThrough === this.observedSafeHead,
       checkedAt: this.checkedAt, unknownReason: this.lastError ?? (this.ready ? null : 'index_not_caught_up'),
     };
+  }
+
+  async waitForSync(timeoutMs) {
+    if (!this.syncing || !this.syncSettled) return;
+    let timer;
+    try {
+      await Promise.race([this.syncSettled, new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
+    } finally { clearTimeout(timer); }
   }
 
   async _call(to, method, args, blockNumber) {
@@ -357,6 +366,8 @@ export class ChainIndex {
   async sync() {
     if (this.syncing) throw new Error('Index sync already running.');
     this.syncing = true;
+    let resolveSync;
+    this.syncSettled = new Promise(resolve => { resolveSync = resolve; });
     this.ready = false;
     try {
       const latest = normalizeBlock(await this.provider.getBlock('latest'));
@@ -392,7 +403,7 @@ export class ChainIndex {
           ? 'incomplete_history' : 'sync_failed';
       this.checkedAt = new Date().toISOString();
       throw error;
-    } finally { this.syncing = false; }
+    } finally { this.syncing = false; resolveSync(); this.syncSettled = null; }
   }
 
   _allLogs({ kind, address, names, fromTimestamp } = {}) {

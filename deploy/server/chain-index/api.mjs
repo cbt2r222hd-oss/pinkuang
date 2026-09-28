@@ -9,7 +9,7 @@ const pageInt = (value, label, fallback, max = 50) => {
 };
 
 /** Separate read-only HTTP surface. Never accepts a transaction, private key or arbitrary RPC address. */
-export function createChainIndexServer(index) {
+export function createChainIndexServer(index, { syncWaitMs = 3500 } = {}) {
   return createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
@@ -25,8 +25,14 @@ export function createChainIndexServer(index) {
     let url;
     try { url = new URL(req.url, 'http://localhost'); }
     catch { return send(400, { error: 'Invalid URL.' }); }
-    const source = index.status();
+    let source = index.status();
     if (url.pathname === '/health') return send(200, { source });
+    // A normal sync makes the snapshot temporarily incomplete. Let that cycle
+    // finish before answering instead of forcing the browser into a full retry.
+    if (!source.complete && index.syncing) {
+      await index.waitForSync(syncWaitMs);
+      source = index.status();
+    }
     if (!source.complete) return send(503, { source, data: null, error: 'Index is not verified through the observed safe head.' });
     try {
       let data;

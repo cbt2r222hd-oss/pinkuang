@@ -354,6 +354,49 @@ test('HTTP returns source block, bounded pages and 503 until verified', async ()
   }
 });
 
+test('HTTP waits briefly for an active sync but still fails closed on timeout or RPC failure', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pinkuang-chain-index-wait-'));
+  const chain = new MockChain(); fixture(chain);
+  const index = new ChainIndex(chain, { dbPath: join(directory, 'index.sqlite'), factory, market, startBlock: 1, confirmations: 2 });
+  const server = createChainIndexServer(index, { syncWaitMs: 80 });
+  try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/v1/pools`;
+    await index.sync();
+    const originalSend = chain.send.bind(chain);
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    chain.send = async (...args) => { await gate; return originalSend(...args); };
+    const syncing = index.sync();
+    assert.equal(index.status().complete, false);
+    const pending = fetch(url);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    release();
+    await syncing;
+    const response = await pending;
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).source.complete, true);
+
+    let releaseSlow;
+    const slow = new Promise(resolve => { releaseSlow = resolve; });
+    chain.send = async (...args) => { await slow; return originalSend(...args); };
+    const delayed = index.sync();
+    assert.equal((await fetch(url)).status, 503);
+    releaseSlow(); await delayed;
+
+    chain.send = async () => { throw new Error('upstream failure'); };
+    const failed = assert.rejects(index.sync());
+    const failedResponse = await fetch(url);
+    await failed;
+    assert.equal(failedResponse.status, 503);
+    assert.equal((await failedResponse.json()).source.unknownReason, 'sync_failed');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    index.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('listener startup fails cleanly when the port is occupied', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pinkuang-chain-index-listen-'));
   const occupied = createNetServer();
