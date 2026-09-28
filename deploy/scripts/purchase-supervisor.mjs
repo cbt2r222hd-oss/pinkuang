@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, statSync, mkdirSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Contract, FetchRequest, JsonRpcProvider, Wallet, getAddress, parseEther, parseUnits } from 'ethers';
@@ -144,6 +144,6 @@ export async function main(args = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
   main().catch(error => { console.error(String(error.message ?? error).slice(0, 300)); process.exitCode = 1; });
 }
