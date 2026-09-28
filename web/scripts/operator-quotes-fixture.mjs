@@ -26,6 +26,7 @@ function dataFixture({ series = 'TapeOut', now = Date.now() } = {}) {
   const collection = OFFICIAL_COLLECTIONS[series];
   const row = { collection, tokenId: '16480', processorName: series, owner: seller,
     category: 'official_mining', classification: 'official_mining',
+    listingReference: { priceWei: '34992000000000000', dailyCapacityPriceWei: '8100000000000000000' },
     bestAsk: { id: askId, account: seller, venue: 'firsto', priceWei: '2355000000000000001', buyerCostWei: '2378550000000000002',
       expiresAt: new Date(now + 86400000).toISOString(), status: 'open', execution: { kind: 'signed_ask', chainId: 56,
         exchange, maker: seller, feeBps: 100, schemaVersion: '2', collection, tokenId: '16480', priceWei: '2355000000000000001' } },

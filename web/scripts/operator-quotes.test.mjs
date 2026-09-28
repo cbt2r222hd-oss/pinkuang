@@ -18,6 +18,17 @@ test('listing daily capacity price divides the displayed ask by daily BEM with e
   assert.throws(() => listingDailyCapacityPrice('-1', '100000000'));
 });
 
+test('Firsto same-model reference stays distinct from the executable ask and both market sorts are forwarded', async () => {
+  const data = dataFixture(), api = apiFixture(data);
+  const page = await listOperatorQuotes({}, { fetcher: api.fetcher });
+  assert.equal(page.rows[0].listingReference.dailyCapacityPriceWei, '8100000000000000000');
+  assert.notEqual(page.rows[0].listingReference.priceWei, page.rows[0].ask.priceWei);
+  assert.match(api.requests[0].input, /sort=daily_capacity_price_low/);
+  await listOperatorQuotes({ sort: 'price_low' }, { fetcher: api.fetcher });
+  assert.match(api.requests[1].input, /sort=price_low/);
+  assert.match(api.requests[1].input, /miningStatus=verified/);
+});
+
 test('quote selection uses exact official NFT/Mining/Market ABI and pins every read to one BSC block', async () => {
   for (const series of ['TapeOut', 'Behemoth']) {
     const data = dataFixture({ series }), chain = chainFixture(data.quote);
