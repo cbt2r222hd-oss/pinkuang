@@ -35,3 +35,5 @@ For an already-running v2 deployment console, use the separate [product update r
 # 已运行站点的热修复
 
 已发布用户站和索引后，使用 [RUNTIME-HOTFIX.md](RUNTIME-HOTFIX.md) 更新现有 v2 runtime/index，保留产品目录、journal 和 index 数据库。
+
+只更换产品网页时使用 [PRODUCT-STATIC-UPDATE.md](PRODUCT-STATIC-UPDATE.md)：核验新旧发布包后原子切换静态目录，合约清单必须逐字节相同，无需重启后台或索引。
