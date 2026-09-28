@@ -9,7 +9,7 @@ const pageInt = (value, label, fallback, max = 50) => {
 };
 
 /** Separate read-only HTTP surface. Never accepts a transaction, private key or arbitrary RPC address. */
-export function createChainIndexServer(index, { syncWaitMs = 3500 } = {}) {
+export function createChainIndexServer(index, { syncWaitMs = 9000 } = {}) {
   return createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
