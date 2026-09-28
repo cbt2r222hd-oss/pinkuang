@@ -1,11 +1,12 @@
 'use client';
+import { displayAmount } from '../lib/amount-display.mjs';
 import { useEffect, useRef, useState } from 'react';
-import { formatEther, formatUnits, ZeroAddress } from 'ethers';
+import { formatUnits, ZeroAddress } from 'ethers';
 import { Search, RefreshCw, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { listOperatorQuotes, loadOperatorQuote, listingDailyCapacityPrice, operatorQuoteDraft, operatorQuoteError, QUOTE_SOURCE } from '../lib/operator-quotes.mjs';
 import { OFFICIAL_COLLECTIONS } from '../../deploy/src/pricing.ts';
 
-const amount = (value, decimals = 18) => value == null ? '—' : formatUnits(value, decimals);
+const amount = (value, decimals = 18) => value == null ? '—' : displayAmount(value, decimals);
 const firstoStatus = { verified: '纯验证', unverified: '未验证', optimal: '最优', not_started: '未启动', failed: '已失败', checking: '检查中' };
 
 export default function OperatorQuotePicker({ config, mode, disabled, onApply }) {
@@ -76,8 +77,8 @@ export default function OperatorQuotePicker({ config, mode, disabled, onApply })
       <p>{selected.quote && <>预计日产出 {amount(selected.quote.estimated24hAtomic, 8)} BEM（估算）；</>}核对区块 {selected.chain.blockNumber}。{!selected.quote && '官网挂单已核验，无需等待 Firsto 报价。'}</p>
       <p>当前可执行挂单日产能价：<strong>{selectedDailyPrice == null ? '—' : `${selectedDailyPrice} BNB / (BEM / 天)`}</strong>{selectedDailyPrice && !selected.quote && '（日产出取自 Firsto 候选列表估算）'}</p>
       {duplicate && <p className="live-notice error">此矿机已有拼矿项目：<a href={`https://bscscan.com/address/${registeredPool}`} target="_blank" rel="noreferrer">{registeredPool}</a>，不能重复创建。</p>}
-      {selected.chain.official ? <p>官网优先：可采购官网挂单 #{selected.chain.official.id}，链上价格 {formatEther(selected.chain.official.priceWei)} BNB。此价格用于指定矿机方案的购机上限。</p>
-        : selected.chain.firsto ? <><p>官网暂无可用挂单；已核验 Firsto 单笔签名订单：卖价 {formatEther(selected.chain.firsto.priceWei)} BNB + 来源手续费 {formatEther(selected.chain.firsto.feeWei)} BNB。</p><p><strong>矿池总支出 {formatEther(selected.chain.firsto.grossWei)} BNB</strong>；指定矿机方案的购机上限已包含该手续费。</p></>
+      {selected.chain.official ? <p>官网优先：可采购官网挂单 #{selected.chain.official.id}，链上价格 {displayAmount(selected.chain.official.priceWei)} BNB。此价格用于指定矿机方案的购机上限。</p>
+        : selected.chain.firsto ? <><p>官网暂无可用挂单；已核验 Firsto 单笔签名订单：卖价 {displayAmount(selected.chain.firsto.priceWei)} BNB + 来源手续费 {displayAmount(selected.chain.firsto.feeWei)} BNB。</p><p><strong>矿池总支出 {displayAmount(selected.chain.firsto.grossWei)} BNB</strong>；指定矿机方案的购机上限已包含该手续费。</p></>
         : <p className="operator-quote-warning">当前没有本项目可采购的官网挂单。可作为灵活购机的型号与产能参考；募集后仍须找到符合条件的官网挂单，未购成按合约退款。</p>}
       {selected.chain.firstoError && <p className="operator-quote-warning">{selected.chain.firstoError}</p>}
       {mode === 'createFlexiblePoolChecked' && <p className="subtle-note">灵活购机仍按日产能参考计算购机上限；实际成交含费总价必须低于该上限。</p>}

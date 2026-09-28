@@ -1,16 +1,10 @@
-import { formatUnits, getAddress } from 'ethers';
+import { getAddress } from 'ethers';
+import { displayAmount } from './amount-display.mjs';
 
 export const POOL_STATES = ['Funding', 'Funded', 'Active', 'Listed', 'Closed', 'Refunding'];
 export const shortAddress = value => typeof value === 'string' && /^0x[\da-f]{40}$/i.test(value) ? `${value.slice(0, 6)}…${value.slice(-4)}` : '—';
 /** Formatting never feeds back into transaction amounts. */
-export function amount(value, decimals = 18, places = 5) {
-  if (value === null || value === undefined) return '—';
-  const exact = formatUnits(BigInt(value), decimals);
-  const [whole, fraction = ''] = exact.split('.');
-  const truncated = fraction.slice(0, places).replace(/0+$/, '');
-  if (BigInt(value) > 0n && whole === '0' && !truncated) return `<0.${'0'.repeat(places - 1)}1`;
-  return `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${truncated ? `.${truncated}` : ''}`;
-}
+export const amount = displayAmount;
 export function sumKnown(rows, field) {
   if (rows.some(row => row[field] === null || row[field] === undefined)) return null;
   return rows.reduce((total, row) => total + BigInt(row[field]), 0n);

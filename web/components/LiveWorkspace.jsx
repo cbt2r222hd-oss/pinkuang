@@ -1,4 +1,5 @@
 'use client';
+import { displayAmount } from '../lib/amount-display.mjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatEther, formatUnits, getAddress, ZeroAddress } from 'ethers';
 import { ArrowLeft, ArrowUpRight, CheckCircle2, CircleAlert, RefreshCw, Wallet } from 'lucide-react';
@@ -10,7 +11,7 @@ import { abandonPreparedIntent, cancelLiveIntent, connectLiveWallet, indexPage, 
 
 const base = process.env.NEXT_PUBLIC_BASE_PATH || '';
 const short = value => value ? `${value.slice(0, 8)}…${value.slice(-6)}` : '—';
-const display = (value, decimals = 18) => value === null || value === undefined ? '未知' : formatUnits(value, decimals);
+const display = (value, decimals = 18) => value === null || value === undefined ? '未知' : displayAmount(value, decimals);
 const stateName = state => ({ 0: '募集中', 1: '待购机', 2: '运行中', 3: '整机出售中', 4: '已关闭', 5: '退款中' })[String(state)] ?? '未知';
 const message = error => error?.shortMessage || error?.message || '请求未完成。';
 

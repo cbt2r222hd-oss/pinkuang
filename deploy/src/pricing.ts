@@ -42,6 +42,11 @@ export interface QuotePlan {
 }
 
 export function formatExact(value: string | null | undefined, decimals = 18): string { return value == null ? '—' : formatUnits(uint(value, '金额'), decimals); }
+/** BNB per one BEM/day, based on this ask rather than another miner's reference. */
+export function mineCapacityPrice(quote: MineQuote): string | null {
+  if (!quote.ask || quote.estimated24hAtomic == null || BigInt(quote.estimated24hAtomic) <= 0n) return null;
+  return (BigInt(quote.ask.priceWei) * 100_000_000n / BigInt(quote.estimated24hAtomic)).toString();
+}
 export function quoteIssue(quote: MineQuote, now = Date.now()): string | null {
   if (quote.issues.length) return quote.issues[0];
   const stale = ageIssue(quote.source.observedAt, now); if (stale) return stale;
@@ -67,6 +72,8 @@ export function parseQuotePage(raw: unknown, receivedAt = Date.now()): MineQuote
       const tokenId = uint(row.tokenId, '矿机编号'); const mining = obj(row.mining, '挖矿数据');
       requireValue(mining.tokenSymbol === 'BEM' && mining.tokenDecimals === 8, '产能币种或小数位不符合 BEM / 8');
       const status = text(mining.status, '挖矿状态');
+      requireValue(status === 'verified' && BigInt(uint(mining.verifiedWeight, '验证权重')) > 0n
+        && uint(mining.unverifiedWeight, '未验证权重') === '0', '只展示纯验证矿机');
       const issues: string[] = []; const stamps: Record<string, number> = {};
       const needed = ['circuit_collections:', 'official_circuit_mining:', 'blockfeed:bsc-tapeout-markets-shadow-v1:circuit-orders'];
       const a = optionalObj(row.bestAsk, '卖单'); let ask: MineAsk | null = null;
@@ -147,7 +154,7 @@ export async function fetchQuotePage(input: { query?: string; sort?: PriceSort; 
   const query = (input.query ?? '').trim(); const page = input.page ?? 1; const sort = input.sort ?? 'price_low';
   requireValue(query.length <= 128 && !/[\x00-\x1f\x7f]/.test(query), '搜索内容过长或无效');
   requireValue(Number.isSafeInteger(page) && page >= 1 && page <= 10_000 && PRICE_SORTS.includes(sort), '分页或排序无效');
-  const params = new URLSearchParams({ category: 'official_mining', sort, page: String(page), pageSize: String(input.pageSize ?? 30) });
+  const params = new URLSearchParams({ category: 'official_mining', miningStatus: 'verified', sort, page: String(page), pageSize: String(input.pageSize ?? 30) });
   if (query) params.set('query', query); if (input.series) params.set('processorName', input.series); if (input.viewId) params.set('viewId', input.viewId);
   return parseQuotePage(await readApi(`/v1/circuits?${params}`, options));
 }

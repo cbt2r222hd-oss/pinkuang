@@ -4,7 +4,7 @@ import { parseEther, toQuantity } from 'ethers';
 import { installLiveFixture, FIXTURE_POOLS, FIXTURE_CONTRACTS } from './live-browser-fixture.mjs';
 import { abi } from '../lib/chain-client.mjs';
 const { chromium } = await import(process.env.BEMINE_PLAYWRIGHT_MODULE || 'playwright');
-const base = process.env.BEMINE_TEST_URL || 'http://127.0.0.1:3108';
+const base = (process.env.BEMINE_TEST_URL || 'http://127.0.0.1:3108').replace(/\/+$/, '');
 assert(['127.0.0.1', 'localhost'].includes(new URL(base).hostname));
 const browser = await chromium.launch({ headless: true, ...(process.env.BEMINE_TEST_BROWSER ? { channel: process.env.BEMINE_TEST_BROWSER } : {}) });
 const checks = [], errors = [], same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
@@ -13,8 +13,8 @@ try {
     const page = await browser.newPage(); page.setDefaultTimeout(10000); page.on('pageerror', error => errors.push(error.message));
     const fixture = await installLiveFixture(page, { confirmDeposit: true });
     const market = FIXTURE_CONTRACTS.shareMarket, quantity = 3n;
-    const expectedData = abi.ShareMarket.encodeFunctionData(kind, kind === 'list' ? [FIXTURE_POOLS.active, quantity, parseEther('0.075')] : [1n, quantity]);
-    const expectedValue = kind === 'list' ? 0n : parseEther('0.243');
+    const expectedData = abi.ShareMarket.encodeFunctionData(kind, kind === 'list' ? [FIXTURE_POOLS.active, quantity, parseEther('0.075500000000000001')] : [1n, quantity]);
+    const expectedValue = kind === 'list' ? 0n : parseEther('0.24543');
     const hash = `0x${'7b'.repeat(32)}`, trace = [], sends = [];
     let revision = 0, record = null, armed = false;
     const checked = transaction => {
@@ -33,6 +33,7 @@ try {
       const request = route.request(), path = new URL(request.url()).pathname.replace(/^.*\/api\/journal\//, ''), method = request.method();
       const input = request.postData() ? request.postDataJSON() : null; let status = 200, body;
       if (path === 'session' && method === 'GET') body = { account: fixture.account };
+      else if (path === 'notifications/capabilities' && method === 'GET') body = {enabled:false};
       else if (path === 'market/result' && method === 'GET') body = { result: null };
       else if (path === 'market' && method === 'GET') body = { revision, record, canAbandon: false };
       else if (path === 'market' && method === 'PUT') {
@@ -46,8 +47,7 @@ try {
       else throw new Error(`Unexpected market fixture ${method} ${path}`);
       return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     });
-    await page.goto(`${base}/#${kind === 'list' ? `detail/${FIXTURE_POOLS.active}` : 'market'}`);
-    await page.getByText('数据区块 100', { exact: true }).waitFor();
+    await page.goto(`${base}/#${kind === 'list' ? 'overview' : 'market'}`);
     await page.evaluate(({ market, selector }) => {
       const request = window.ethereum.request.bind(window.ethereum);
       window.ethereum.request = payload => {
@@ -57,21 +57,28 @@ try {
         return request(payload);
       };
     }, { market, selector: abi.ShareMarket.getFunction(kind).selector });
-    await page.getByRole('button', { name: '连接钱包', exact: true }).click();
+    await page.locator('header').getByRole('button', { name: '连接钱包', exact: true }).click();
     await page.getByRole('button', { name: '连接 MetaMask', exact: true }).click();
     await page.getByText('钱包已连接。发送交易前会请你确认。', { exact: true }).waitFor();
-    await page.getByRole('button', { name: kind === 'list' ? '出售我的份额' : '买入份额', exact: true }).click();
+    await page.getByText('数据区块 100', { exact: true }).waitFor();
+    assert.equal(await page.locator('nav').getByRole('button', {name:'运营工作台',exact:true}).count(),0);
+    await page.getByRole('button', { name: kind === 'list' ? '挂单 Behemoth #8204' : '买入份额', exact: true }).click();
+    if (kind === 'list') {
+      assert.equal(await page.getByLabel('份额数量', {exact:true}).inputValue(),'30');
+      assert.match(await page.locator('[role=dialog]').innerText(),/已自动选择你的持仓项目/);
+      assert.equal(await page.locator('[role=dialog] input[placeholder="0x…"]').count(),0);
+    }
     await page.getByLabel('份额数量', { exact: true }).fill('3');
-    if (kind === 'list') await page.getByLabel('每份价格 · BNB', { exact: true }).fill('0.075');
+    if (kind === 'list') await page.getByLabel('每份价格 · BNB', { exact: true }).fill('0.075500000000000001');
     await page.getByRole('button', { name: '核对交易金额', exact: true }).click();
     await page.getByRole('button', { name: '确认并前往钱包', exact: true }).waitFor();
-    assert.match(await page.locator('.confirm-lines').innerText(), kind === 'fill' ? /0\.243 BNB/ : /0 BNB/);
+    assert.match(await page.locator('.confirm-lines').filter({hasText:'支付金额'}).innerText(), kind === 'fill' ? /0\.245 BNB/ : /0\.000 BNB/);
     assert.equal(sends.length, 0, 'preview cannot send');
     await page.getByRole('button', { name: '确认并前往钱包', exact: true }).click();
     await page.getByText('有一笔交易等待核对', { exact: true }).waitFor();
     assert.equal(sends.length, 1); assert(trace.indexOf('intent-ack') < trace.indexOf('permit-ack')); assert(trace.indexOf('permit-ack') < trace.indexOf('send'));
     assert.equal(await page.getByText('认购已确认', { exact: true }).count(), 0);
-    checks.push({ kind, calldata: expectedData, valueWei: expectedValue.toString(), trace }); await page.close();
+    checks.push({ kind, directFromHoldings:kind==='list', exactRawPricePreserved:true, calldata: expectedData, valueWei: expectedValue.toString(), trace }); await page.close();
   }
   assert.deepEqual(errors, []); console.log(JSON.stringify({ passed: checks.length, checks }));
 } finally { await browser.close(); }

@@ -1,4 +1,5 @@
-import { BrowserProvider, Contract, JsonRpcProvider, ZeroAddress, formatEther, getAddress, parseEther, type Provider, type TransactionReceipt } from 'ethers';
+import { displayUnits } from './display';
+import { BrowserProvider, Contract, JsonRpcProvider, ZeroAddress, getAddress, parseEther, type Provider, type TransactionReceipt } from 'ethers';
 import type { WalletProvider } from './wallet';
 
 export const MARKET_CHAIN_ID = 56;
@@ -98,7 +99,7 @@ export function pageIds(nextOrderId: bigint, cursor: bigint | null = null): bigi
   while (current > 0n && ids.length < MARKET_PAGE_SIZE) ids.push(current--);
   return ids;
 }
-export function bnb(value: bigint): string { return formatEther(value); }
+export function bnb(value: bigint): string { return displayUnits(value); }
 
 export function marketProvider(wallet: WalletProvider | null): Provider {
   return wallet ? new BrowserProvider(wallet, 'any') : new JsonRpcProvider('https://bsc-dataseed.bnbchain.org', 56, { staticNetwork: true });

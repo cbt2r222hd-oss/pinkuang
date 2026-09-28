@@ -1,4 +1,5 @@
 import {useState} from 'react';
+import { displayDecimal } from '../lib/amount-display.mjs';
 import {Pause,Play,ArrowRight,ArrowUpRight,Layers3,Users,Activity,Wallet,ShieldCheck,Vote,ChevronRight} from 'lucide-react';
 import {platformTotals} from '../lib/platform-stats';
 import {useI18n} from '../lib/i18n';
@@ -6,7 +7,7 @@ import HeroScene from './HeroScene';
 import CommunityPattern from './CommunityPattern';
 import BemPriceStat from './BemPriceStat';
 import purposeArt from '../lib/purpose-art.json';
-const fmt=(n,d=0)=>n==null?'—':typeof n==='bigint'?n.toLocaleString('en-US'):Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmt=(n,d=0)=>n==null?'—':d>0?displayDecimal(n):typeof n==='bigint'?n.toLocaleString('en-US'):Number(n).toLocaleString('en-US',{maximumFractionDigits:0});
 export default function SiteOverview({pools,onExplore,onAccount,onRules,onRecords,live=false,liveStats=null,liveSource=null}){
  const {t,locale}=useI18n();
  const [motionPaused,setMotionPaused]=useState(false);

@@ -1,12 +1,83 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {serverConfiguration} from './index.mjs';
-import {upstreamUrl, proxyFirsto, createQuoteRateLimiter} from './firsto-proxy.mjs';
+import {upstreamUrl, proxyFirsto, createQuoteRateLimiter, verifiedQuotePage} from './firsto-proxy.mjs';
 
 test('quote proxy pins the origin, read-only paths and official collections', () => {
   assert.equal(upstreamUrl('/firsto-api/v1/circuits?page=1&pageSize=20').searchParams.get('category'),'official_mining');
+  assert.equal(upstreamUrl('/firsto-api/v1/circuits?page=1&pageSize=20').searchParams.get('miningStatus'),'verified');
   assert.equal(upstreamUrl('/firsto-api/v1/circuit/0xb1024b89886b9a34aa4ff5f31c411d708b20a14c/16480').origin,'https://api-tapeout.firsto.ai');
   for(const path of ['//evil.example/v1/circuits','/firsto-api/v1/order-request','/firsto-api/v1/circuits?account=0x123','/firsto-api/v1/circuits?category=other','/firsto-api/v1/circuits?pageSize=999999','/firsto-api/v1/circuit/0x0000000000000000000000000000000000000001/1','/firsto-api/v1/circuit/0xb1024b89886b9a34aa4ff5f31c411d708b20a14c/'+(2n**256n).toString()]) assert.throws(()=>upstreamUrl(path));
+});
+
+test('miner verification is applied before source pagination and cannot be bypassed by query duplicates', () => {
+  const url = upstreamUrl('/firsto-api/v1/circuits?sort=daily_capacity_price_low&page=3&miningStatus=verified&viewId=frozen-1');
+  assert.equal(url.searchParams.get('sort'), 'daily_capacity_price_low');
+  assert.equal(url.searchParams.get('page'), '3');
+  assert.equal(url.searchParams.get('viewId'), 'frozen-1');
+  assert.deepEqual(url.searchParams.getAll('miningStatus'), ['verified']);
+  for (const query of ['miningStatus=unverified', 'miningStatus=optimal', 'miningStatus=',
+    'miningStatus=verified&miningStatus=unverified', 'miningStatus=verified&miningStatus=verified',
+    'sort=price_low&sort=daily_capacity_price_low', 'sort=arbitrary', 'page=1&page=2']) {
+    assert.throws(() => upstreamUrl(`/firsto-api/v1/circuits?${query}`));
+  }
+  assert.equal(upstreamUrl('/firsto-api/v1/circuit-holders?page=1').searchParams.has('miningStatus'), false,
+    'market reference statistics are a separate upstream endpoint');
+});
+
+function verifiedRow(tokenId = '1') {
+  return { collection: '0xb1024b89886b9a34aa4ff5f31c411d708b20a14c', category: 'official_mining',
+    classification: 'official_mining', tokenId,
+    mining: { status: 'verified', verifiedWeight: '1204', unverifiedWeight: '0',
+      estimated24hAtomic: '562896000', tokenSymbol: 'BEM', tokenDecimals: 8 },
+    bestAsk: { priceWei: '40000000000000000000', buyerCostWei: '40400000000000000000',
+      status: 'open', execution: { kind: 'signed_ask', signature: 'public-order-signature' } },
+    listingReference: { priceWei: '46044892800000000000', dailyCapacityPriceWei: '8180000000000000000' } };
+}
+
+test('quote pages exclude unverified, mixed, optimal and malformed miners rather than interpreting order status as verification', () => {
+  const good = verifiedRow(), changed = change => ({ ...good, mining: { ...good.mining, ...change } });
+  const rows = [good, { ...good, collection: '0x1f5cb4aeae1807bf60c3b9c0d8adbcc14e91f12c', tokenId: '2' },
+    changed({ status: 'unverified' }), changed({ status: 'optimal' }), changed({ status: 'not_started' }),
+    changed({ verifiedWeight: '0' }), changed({ unverifiedWeight: '1' }), changed({ verifiedWeight: 1204 }),
+    changed({ verifiedWeight: '-1' }), changed({ verifiedWeight: (2n ** 128n).toString() }),
+    changed({ optimal: true }), changed({ tokenDecimals: 18 }), changed({ tokenSymbol: 'OTHER' }),
+    { ...good, mining: null }, { ...good, collection: '0x0000000000000000000000000000000000000001' },
+    { ...good, classification: 'other' }, { ...good, mining: { ...good.mining, status: 'unverified' }, bestAsk: { status: 'verified' } }];
+  const raw = { rows, page: 3, pageSize: 50, totalPages: 355, total: 17720,
+    viewId: 'frozen-1', sourceBlock: '124456466', sourceFreshness: { mining: '2026-09-28T03:00:00.000Z' } };
+  const filtered = verifiedQuotePage(raw);
+  assert.deepEqual(filtered.rows, rows.slice(0, 2));
+  assert.equal(filtered.quoteFilter.excludedOnPage, rows.length - 2);
+  for (const key of ['page', 'pageSize', 'totalPages', 'total', 'viewId', 'sourceBlock', 'sourceFreshness'])
+    assert.deepEqual(filtered[key], raw[key]);
+  assert.equal(raw.rows.length, rows.length, 'upstream input is not mutated');
+  assert.deepEqual(verifiedQuotePage({ ...raw, rows: [] }).rows, []);
+  for (const bad of [null, [], {}, { rows: null }, { rows: Array(51).fill(good) }]) assert.throws(() => verifiedQuotePage(bad));
+});
+
+test('quote filtering preserves exact sell price, daily units, reference price, order payload and source order', async () => {
+  const first = verifiedRow('2465'), second = verifiedRow('2562');
+  second.bestAsk = { ...second.bestAsk, priceWei: '13343616000000000000', buyerCostWei: '13477052160000000000' };
+  second.mining = { ...second.mining, verifiedWeight: '366', estimated24hAtomic: '171072000' };
+  const raw = { rows: [first, { ...first, mining: { ...first.mining, status: 'unverified' } }, second],
+    page: 1, totalPages: 355, total: 17720, viewId: 'frozen-view', sourceBlock: '124456466' };
+  const res = { headers: {}, setHeader(key, value) { this.headers[key.toLowerCase()] = value; }, end(value) { this.body = value; } };
+  await proxyFirsto({ method: 'GET', url: '/firsto-api/v1/circuits?sort=daily_capacity_price_low&page=1',
+    socket: { remoteAddress: '192.0.2.12' } }, res, { limiter: createQuoteRateLimiter(), fetcher: async url => {
+    assert.equal(url.searchParams.get('miningStatus'), 'verified');
+    assert.equal(url.searchParams.get('sort'), 'daily_capacity_price_low');
+    return Response.json(raw, { headers: { 'x-tapeout-source-block': raw.sourceBlock } });
+  } });
+  assert.equal(res.statusCode, 200);
+  const result = JSON.parse(res.body.toString());
+  assert.deepEqual(result.rows, [first, second]);
+  assert.equal(result.quoteFilter.excludedOnPage, 1);
+  assert.equal(res.headers['x-tapeout-source-block'], raw.sourceBlock);
+  // Compare the displayed seller-price / daily-BEM ratio using integers. The
+  // unrelated per-model listing reference and Firsto buyer fee cannot replace it.
+  assert(BigInt(first.bestAsk.priceWei) * BigInt(second.mining.estimated24hAtomic)
+    < BigInt(second.bestAsk.priceWei) * BigInt(first.mining.estimated24hAtomic));
 });
 test('quote proxy rejects POST before any network call', async()=>{
   const response={statusCode:0,setHeader(){},end(body){this.body=body;}};

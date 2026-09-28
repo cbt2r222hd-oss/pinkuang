@@ -1,6 +1,5 @@
 'use client';
 import {useEffect,useRef,useState} from 'react';
-import {formatUnits} from 'ethers';
 import {readPortfolioDailyCapacity} from '../lib/portfolio-capacity.mjs';
 import {amount} from '../lib/live-view.mjs';
 
@@ -22,9 +21,9 @@ export default function PortfolioCapacity({config,provider,portfolio,locale}){
     {busy&&progress&&<p role="status">{L('已核对','Verified')} {progress.inspected.toString()} / {progress.total.toString()}</p>}
     {quote&&!valid&&<p role="status">{L('暂时无法取得完整、有效的日产能参考，请重新核对。实际认购、挂牌和领取不受此参考数据影响。','A complete, current estimate is unavailable. Verify again. Subscription, listing and claiming do not depend on this reference data.')}</p>}
     {valid&&<div className="portfolio-capacity-result">
-      <p>{L('项目参考日产','Portfolio estimated daily output')}: <strong>{formatUnits(quote.estimated24hAtomic,8)} BEM</strong> · {L('仍持有','Retained')}: {quote.retainedChildren.toString()} · {L('已售剔除','Sold excluded')}: {(quote.soldChildren+quote.pendingSaleChildren).toString()}</p>
+      <p>{L('项目参考日产','Portfolio estimated daily output')}: <strong>{amount(quote.estimated24hAtomic,8)} BEM</strong> · {L('仍持有','Retained')}: {quote.retainedChildren.toString()} · {L('已售剔除','Sold excluded')}: {(quote.soldChildren+quote.pendingSaleChildren).toString()}</p>
       {quote.priceWeiPerDailyBem===null?<p>{L('当前没有仍持有的矿机，不计算日产能价格。','No miners are currently retained, so no daily-output price is calculated.')}</p>:<>
-        <p>{L('每份参考日产','Estimated daily output per share')}: {formatUnits(quote.estimated24hPerShareNumerator,10)} BEM</p>
+        <p>{L('每份参考日产','Estimated daily output per share')}: {amount(quote.estimated24hPerShareNumerator,10)} BEM</p>
         <p>{L('募集预算 / 参考日产 1 BEM 的价格','Original funding budget per 1 BEM of estimated daily output')}: <strong>{amount(quote.priceWeiPerDailyBem,18,8)} BNB</strong></p>
       </>}
       <p>{L('按项目原募集预算折算，非当前份额挂牌价，未加份额交易手续费；为税前产能估计，不等于实时收益或收益承诺。','Based on the original funding budget, not a current share ask; share-trading fees are excluded. This is a gross output estimate, not current earnings or a return promise.')}</p>

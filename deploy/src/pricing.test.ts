@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createQuotePlan, fetchMineQuote, fetchQuotePage, formatExact, MAX_QUOTE_AGE_MS, OFFICIAL_COLLECTIONS, parseCapacityReference, parseQuotePage, quoteIssue, referenceIssue, verifyQuoteDetail } from './pricing';
+import { createQuotePlan, fetchMineQuote, fetchQuotePage, formatExact, mineCapacityPrice, MAX_QUOTE_AGE_MS, OFFICIAL_COLLECTIONS, parseCapacityReference, parseQuotePage, quoteIssue, referenceIssue, verifyQuoteDetail } from './pricing';
 
 const now = Date.now();
 const seller = '0x1111111111111111111111111111111111111111';
@@ -45,6 +45,27 @@ test('same-name fake official collection, wrong classification and incorrect uni
   const wrongAmount = row(); (wrongAmount.bestAsk as unknown as { priceWei: number }).priceWei = 2355000000000000000;
   const result = parseQuotePage(page([counterfeit, wrongUnit, wrongCategory, wrongAmount, row()]), now);
   assert.equal(result.rows.length, 1); assert.equal(result.excluded, 4);
+});
+
+test('unverified, mixed-weight, optimal, not-started and unknown mining states stay off the quote list', () => {
+  const invalid = ['unverified', 'not_started', 'optimal', 'checking', 'failed'].map(status => {
+    const item = row(); item.mining.status = status; return item;
+  });
+  const mixed = row(); mixed.mining.unverifiedWeight = '1';
+  const zero = row(); zero.mining.verifiedWeight = '0';
+  const result = parseQuotePage(page([...invalid, mixed, zero, row()]), now);
+  assert.equal(result.rows.length, 1); assert.equal(result.excluded, 7);
+});
+
+test('per-miner capacity price uses exact ask divided by BEM/day, not same-model reference or rounded yield', () => {
+  const first = quote(); first.ask!.priceWei = '40000000000000000000'; first.estimated24hAtomic = '562896000';
+  const second = quote(); second.ask!.priceWei = '13343616000000000000'; second.estimated24hAtomic = '171072000';
+  assert.equal(mineCapacityPrice(first), (40n * 10n ** 26n / 562896000n).toString());
+  assert.equal(mineCapacityPrice(second), '7800000000000000000');
+  assert.ok(BigInt(mineCapacityPrice(first)!) < BigInt(mineCapacityPrice(second)!));
+  assert.notEqual(mineCapacityPrice(second), second.listingReference!.dailyCapacityPriceWei);
+  second.estimated24hAtomic = '0'; assert.equal(mineCapacityPrice(second), null);
+  second.estimated24hAtomic = null; assert.equal(mineCapacityPrice(second), null);
 });
 
 test('stale, missing or future source timestamps prevent quote use without guessing', () => {

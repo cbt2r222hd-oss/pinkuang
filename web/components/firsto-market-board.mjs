@@ -1,3 +1,4 @@
+import { displayAmount } from '../lib/amount-display.mjs';
 import { formatUnits } from 'ethers';
 import {
   fetchQuotePage,
@@ -65,13 +66,8 @@ export function marketReferenceView(raw, now = Date.now()) {
   return Object.freeze(reference);
 }
 
-export function formatMarketAmount(value, decimals = 18, places = 6) {
-  if (value === null || value === undefined) return '暂不可用';
-  const exact = formatUnits(value, decimals);
-  const [whole, fraction = ''] = exact.split('.');
-  const shown = fraction.slice(0, places).replace(/0+$/, '');
-  if (BigInt(value) > 0n && whole === '0' && !shown) return `<0.${'0'.repeat(places - 1)}1`;
-  return `${whole}${shown ? `.${shown}` : ''}`;
+export function formatMarketAmount(value, decimals = 18) {
+  return value == null ? '暂不可用' : displayAmount(value, decimals);
 }
 
 async function fetchMarketReference({ fetcher, signal, baseUrl }) {

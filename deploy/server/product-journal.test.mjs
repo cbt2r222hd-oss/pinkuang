@@ -35,6 +35,7 @@ const views = new Interface(['function operator() view returns(address)','functi
   'function legacyFactory() view returns(address)','function budgetWei() view returns(uint256)',
   'function machineRegistryStatus() view returns(bool initialized,bool ready,uint256 cursor,uint256 cutoff)',
   'function machinePool(address,uint256) view returns(address)',
+  'function poolCount() view returns(uint256)', 'function creationPaused() view returns(bool)',
   'function factory() view returns(address)','function OFFICIAL_FACTORY() view returns(address)',
   'function unitPriceWei() view returns(uint256)','function salePrice() view returns(uint256)',
   'function feeBps() view returns(uint16)','function buyerFeeBps() view returns(uint16)',
@@ -48,7 +49,7 @@ function proof(record = intent()) {
   const state = { mined:false, registered:true, chain:'0x38', final:101, fail:false, nonce:7, txHash:hash(77),
     target:record.target, data:record.data, value:BigInt(record.value), status:1, logs:[],accountCode:'0x',
     balance:10n**18n,gasPrice:1_000_000_000n,estimate:50000n,operator:account,graphFailed:false,graphChecks:0,
-    registry:[true,true,0n,0n],reservedPool:addr(0) };
+    registry:[true,true,0n,0n],reservedPool:addr(0),legacyCount:0n,legacyPaused:true };
   const event = (user = account, shares = 2n, amount = 20n, address = pool) => ({ address,transactionHash:hash(77),blockHash:hash(100),
     ...(record.targetType==='portfolio'?portfolioAbi.encodeEventLog(portfolioAbi.getEvent('Deposited'),[user,shares,amount])
       :poolAbi.encodeEventLog(poolAbi.getEvent('Deposited'),[user,shares,amount,20n])) });
@@ -65,6 +66,7 @@ function proof(record = intent()) {
       if (parsed.name==='machineRegistryStatus') return state.registry===null?'0x':views.encodeFunctionResult(parsed.name,state.registry);
       const result = ({ operator:state.operator,isPool:state.registered,shareMarket:market,factory,OFFICIAL_FACTORY:factory,legacyFactory:addr(10),budgetWei:1000n,unitPriceWei:10n,salePrice:200n,
         machinePool:state.reservedPool,feeBps:state.sellerFeeBps??100n,buyerFeeBps:state.buyerFeeBps??100n,
+        poolCount:state.legacyCount,creationPaused:state.legacyPaused,
         orders:[account,pool,100n,state.orderPrice??5n,true] })[parsed.name];
       return views.encodeFunctionResult(parsed.name,[result]);
     },
@@ -81,10 +83,10 @@ function proof(record = intent()) {
   };
   return {state,provider,event};
 }
-async function fixture({record = intent(),allow = [factory]} = {}) {
+async function fixture({record = intent(),allow = [factory],legacyFactory} = {}) {
   const directory = await mkdtemp(join(tmpdir(),'pinkuang-products-')), dbPath = join(directory,'private','journal.sqlite');
   const p = proof(record);
-  const service = createJournalService({dbPath,origin,provider:p.provider,currentArtifactDigest:()=>hash(1),allowedProductFactories:allow,
+  const service = createJournalService({dbPath,origin,provider:p.provider,currentArtifactDigest:()=>hash(1),allowedProductFactories:allow,legacyFactory,
     productGraphVerifier:async()=>{p.state.graphChecks++;if(p.state.graphFailed)throw Error('graph changed');
       return {productKind:record.targetType?.startsWith('portfolio')?'budget':'pool',factory,legacyFactory:addr(10)};}});
   const server = createServer((req,res)=>service.handle(req,res));
@@ -158,6 +160,23 @@ test('new project signing refuses a legacy/incomplete registry and a machine alr
     await assert.rejects(verifyProductIntent(p.provider,record,allow),/already has a project/);
     p.state.reservedPool=addr(0);await verifyProductIntent(p.provider,record,allow);
   }
+});
+
+test('cutover is checked before journal persistence and again before a creation signing permission',async()=>{
+  const params=[addr(4),1,1000,1000,addr(0),0,2000,3000],record=intent('createPool',[params],'0','factory');
+  const f=await fixture({record,legacyFactory:addr(10)});
+  try {
+    f.state.legacyPaused=false;
+    assert.equal((await f.request('market','PUT',{record,expectedRevision:0})).status,409);
+    assert.equal((await f.request('market')).body.record,null,'failed cutover cannot reserve the wallet nonce');
+    f.state.legacyPaused=true;
+    const saved=await f.request('market','PUT',{record,expectedRevision:0});assert.equal(saved.status,200);
+    f.state.legacyPaused=false;
+    const denied=await f.request('market/arm','POST',{expectedRevision:saved.body.revision});
+    assert.equal(denied.status,409);assert.match(denied.body.error,/尚未停建/);
+    f.state.legacyPaused=true;
+    const armed=await f.request('market/arm','POST',{expectedRevision:saved.body.revision});assert.equal(armed.status,200);
+  }finally{await f.close();}
 });
 
 test('product route rejects unconfigured factory, arbitrary selector, extra calldata and nonpayable value',async()=>{

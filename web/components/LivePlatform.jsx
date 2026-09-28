@@ -64,6 +64,8 @@ import {
   abandonPrepared,
 } from "../lib/live-transactions.mjs";
 import { prepareProductAction } from "../lib/live-actions.mjs";
+import { shareListingView } from "../lib/share-listing-view.mjs";
+import { displayDecimal } from "../lib/amount-display.mjs";
 import { abi, readPoolSnapshot } from "../lib/chain-client.mjs";
 import {
   amount,
@@ -441,9 +443,7 @@ export default function LivePlatform() {
     setError("");
     if (
       kind === "list" &&
-      (pool?.status !== "Active" ||
-        pool.shareTradingAllowed !== true ||
-        !pool.availableShares)
+      !shareListingView(pool).allowed
     ) {
       setError(
         L("这台矿机暂不支持份额转让", "Shares in this miner cannot be transferred at this stage"),
@@ -451,7 +451,7 @@ export default function LivePlatform() {
       return;
     }
     setPrepared(null);
-    setQuantity("1");
+    setQuantity(kind === 'list' ? shareListingView(pool).defaultQuantity : "1");
     setPrice("");
     setModal({ type: "action", kind, pool, ...extra });
   };
@@ -1228,6 +1228,10 @@ export default function LivePlatform() {
               <td className="num">{amount(p.unitPriceWei)} BNB</td>
               <td>—</td>
               <td>
+                {holdings && p.shares > 0n && <button className="btn secondary" disabled={loading || busy || !!pending || !shareListingView(p).allowed}
+                  onClick={() => openAction('list', p)} aria-label={L(`挂单 ${p.name} #${p.tokenId}`, `List ${p.name} #${p.tokenId}`)}>
+                  {L('挂单出售', 'List shares')}
+                </button>}
                 <button className="text-button" onClick={() => openDetails(p)}>
                   {L("查看矿机", "View miner")}
                   <ArrowRight size={16} />
@@ -2437,6 +2441,7 @@ export default function LivePlatform() {
                     )}
                   />
                 )}
+                {account && moreButton(positionCursor, 'positions')}
               </section>
             </>
           )}
@@ -2759,6 +2764,12 @@ export default function LivePlatform() {
                     </Button>
                   ) : (
                     <>
+                      {modal.kind === 'list' && <div className="confirm-lines">
+                        <div><span>{L('我的持有份额', 'My shares')}</span><strong>{modal.pool.shares.toString()}</strong></div>
+                        <div><span>{L('已挂单锁定', 'Locked in orders')}</span><strong>{modal.pool.lockedShares.toString()}</strong></div>
+                        <div><span>{L('本次最多可售', 'Available to list')}</span><strong>{modal.pool.availableShares.toString()}</strong></div>
+                        <p>{L('已自动选择你的持仓项目，无需填写合约地址。', 'Your holding is selected automatically. No contract address is required.')}</p>
+                      </div>}
                       {["deposit", "fill", "list"].includes(modal.kind) && (
                         <label className="field-label">
                           {L("份额数量", "Number of shares")}
@@ -2771,6 +2782,8 @@ export default function LivePlatform() {
                           />
                         </label>
                       )}
+                      {modal.kind === 'list' && <button className="text-button" disabled={loading || busy || !!prepared}
+                        onClick={() => setQuantity(modal.pool.availableShares.toString())}>{L('填入全部可售份额', 'Use all available shares')}</button>}
                       {["list", "propose"].includes(modal.kind) && (
                         <label className="field-label">
                           {modal.kind === "list"
@@ -2784,7 +2797,7 @@ export default function LivePlatform() {
                             value={price}
                             disabled={loading || busy || !!prepared}
                             onChange={(e) => setPrice(e.target.value)}
-                            placeholder="0.00"
+                            placeholder="0.005"
                           />
                         </label>
                       )}
@@ -2804,6 +2817,10 @@ export default function LivePlatform() {
                       {prepared ? (
                         <>
                           <div className="confirm-lines">
+                            {modal.kind === 'list' && <>
+                              <div><span>{L('挂牌份数', 'Listed shares')}</span><strong>{quantity}</strong></div>
+                              <div><span>{L('每份挂牌价', 'Ask per share')}</span><strong title={`${price} BNB`}>{displayDecimal(price)} BNB</strong></div>
+                            </>}
                             {modal.kind === 'fill' && prepared.marketTrade && <>
                               <div><span>{L('成交基价', 'Base price')}</span><strong>{amount(prepared.marketTrade.grossWei, 18, 18)} BNB</strong></div>
                               <div><span>{L('买方 1% 手续费', 'Buyer fee · 1%')}</span><strong>{amount(prepared.marketTrade.buyerFeeWei, 18, 18)} BNB</strong></div>
@@ -2845,8 +2862,8 @@ export default function LivePlatform() {
                           </div>
                           <p className="inline-note">
                             {L(
-                              "Gas 以钱包显示为准。请核对金额后在钱包确认；交易确认前不会显示认购成功。",
-                              "Gas is shown by your wallet. Check the amount before confirming. A subscription is only successful after on-chain confirmation.",
+                              "金额显示四舍五入至三位小数，交易仍使用原始精确值。请在钱包核对金额与 Gas；以链上确认为准。",
+                              "Amounts are displayed rounded to three decimals; transactions retain their exact original values. Review the amount and Gas in your wallet; completion requires on-chain confirmation.",
                             )}
                           </p>
                           {busy && transactionStage && <p className="wallet-connect-status" role="status" aria-live="polite">

@@ -1,4 +1,5 @@
 const en = {
+  '出售我的项目份额':'Sell my portfolio shares','已自动选择当前持仓项目，可售份额：':'Your holding is selected automatically. Available shares:',
   '/ 100 份':'/ 100 shares','/ 100 份。':'/ 100 shares.','BNB / 100 份；单机上限':'BNB / 100 shares; per-miner cap',
   'BNB · 合约价格上限':'BNB · Contract price cap','BNB · 已购机':'BNB · Spent on miners','BNB · 我的可转份额':'BNB · My transferable shares',
   'BNB · 赞成':'BNB · Yes votes','BNB。募集截至':'BNB. Funding deadline','BNB。款项来自项目预算，本钱包只付 Gas。':'BNB. Paid from the portfolio budget; this wallet pays Gas only.',

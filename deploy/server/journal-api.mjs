@@ -10,6 +10,7 @@ import { fetchOfficialCandidates } from '../scripts/official-market-discovery.mj
 import { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI, verifyPortfolioIntent } from './portfolio-intent.mjs';
 import { verifyControlledFirstoSale } from './firsto-sale-preflight.mjs';
 import { readBudgetCandidates } from './budget-candidates.mjs';
+import { legacyFactoryConfiguration, verifyCreationCutover } from './creation-cutover.mjs';
 export { PRODUCT_PORTFOLIO_ABI, PRODUCT_PORTFOLIO_FACTORY_ABI } from './portfolio-intent.mjs';
 
 const MAX_BODY = 64 * 1024;
@@ -252,7 +253,7 @@ export async function cancellationIntent(provider, record) {
 }
 
 /** The trusted server RPC validates registration/value before issuing the first durable signing ACK. */
-export async function verifyProductIntent(provider, record, allowedFactories, graphVerifier) {
+export async function verifyProductIntent(provider, record, allowedFactories, graphVerifier, { legacyFactory } = {}) {
   if (!provider) fail(503, 'BSC product verifier is unavailable.');
   if (!allowedFactories.has(identity(record.factory))) fail(403, 'This Factory is not enabled for product transactions.');
   const decoded = decodeProduct(record);
@@ -263,6 +264,7 @@ export async function verifyProductIntent(provider, record, allowedFactories, gr
     const tag = `0x${block.number.toString(16)}`;
     if (typeof graphVerifier !== 'function') fail(503, 'Trusted product graph verifier is unavailable.');
     const graph = await graphVerifier(provider, record.factory, block);
+    await verifyCreationCutover(provider, record, decoded, block, legacyFactory, fail);
     const call = async (to, method, args = []) => IDENTITY_ABI.decodeFunctionResult(method,
       await provider.send('eth_call', [{ to, data: IDENTITY_ABI.encodeFunctionData(method, args) }, tag]))[0];
     const code = async to => { if (await provider.getCode(to, block.number) === '0x') fail(409, 'Product contract has no code.'); };
@@ -718,7 +720,7 @@ export function createBoundedOfficialProvider(url, timeoutMs = OFFICIAL_RPC_TIME
 
 export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = false,
   provider: suppliedProvider, currentArtifactDigest, assertSigningInputsCurrent = () => {}, allowedProductFactories = [], productDeploymentRecordPath,
-  productDeploymentRecord, productArtifactBundle, productGraphVerifier,
+  productDeploymentRecord, productArtifactBundle, productGraphVerifier, legacyFactory,
   officialCandidateDiscovery = fetchOfficialCandidates, officialSnapshotFetch = fetch, budgetCandidateDiscovery = readBudgetCandidates,
   officialScanTimeoutMs = OFFICIAL_SCAN_MS, now = Date.now, notificationService,
   genesisRecordPath, genesisBundlePath, genesisRecord, genesisBundle } = {}) {
@@ -732,6 +734,7 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
   if (parsedOrigin.protocol === 'http:' && !['127.0.0.1','localhost','[::1]'].includes(parsedOrigin.hostname))
     throw new Error('Journal HTTP origin must be loopback.');
   const cookieSecure = secureCookies || parsedOrigin.protocol === 'https:';
+  legacyFactory = legacyFactoryConfiguration(legacyFactory);
   const store = new JournalStore(dbPath);
   const provider = suppliedProvider ?? (rpcUrl ? new JsonRpcProvider(rpcUrl, undefined, {cacheTimeout:-1}) : null);
   const officialProvider = suppliedProvider ? suppliedProvider : rpcUrl ? createBoundedOfficialProvider(rpcUrl) : null;
@@ -839,7 +842,8 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
     const blockNumber = Number(blockText), hash = blockHash.toLowerCase();
     // No untrusted request reaches graph verification or RPC before this process-wide budget.
     consumeOfficialBudget();
-    if (!officialProvider || !productMode || trustedProduct && trustedProduct.upgradeRecord?.schemaVersion !== 2)
+    if (!officialProvider || !productMode || trustedProduct && trustedProduct.record.kind !== 'integrated-v2'
+      && trustedProduct.upgradeRecord?.schemaVersion !== 2)
       fail(503, 'Reviewed upgraded product graph is unavailable.');
     const factory = trustedProduct?.record?.addresses?.factory ??
       (typeof productGraphVerifier === 'function' && productFactories.size === 1 ? [...productFactories][0] : null);
@@ -1160,7 +1164,7 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
         if (!current.record || current.record.version !== 2 || current.revision !== revision) fail(409,'Product revision changed.');
         if (current.record.hash || current.record.recoveryHashes?.length || current.record.cancellationRequests?.length)
           fail(409,'Product transaction already has a send or recovery history.');
-        await verifyProductIntent(provider,current.record,productFactories,graphVerifier);
+        await verifyProductIntent(provider,current.record,productFactories,graphVerifier,{ legacyFactory });
         const record=current.record, hex=value=>`0x${BigInt(value).toString(16)}`;
         const next=store.armMarket(account,revision);
         return send(200,{revision:next,record,transaction:{chainId:'0x38',from:record.account,to:record.target,
@@ -1185,7 +1189,7 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
         if (!current.record && productMode && record.version === 1 && !record.hash && !record.recoveryHashes?.length)
           fail(409, '旧市场入口已停止新签名，请从 BEMine 产品页面操作；已有交易可继续补录哈希恢复。');
         // Recovery writes must work even if the allowlist changes or the RPC is down.
-        if (!current.record && record.version === 2) await verifyProductIntent(provider, record, productFactories, graphVerifier);
+        if (!current.record && record.version === 2) await verifyProductIntent(provider, record, productFactories, graphVerifier,{ legacyFactory });
         return send(200, { revision: store.putMarket(account, record, exactRevision(body.expectedRevision)) });
       }
       if (method === 'DELETE' && path === '/api/journal/market') {
@@ -1242,6 +1246,7 @@ export function journalConfiguration(env = process.env) {
   if (rpcUrl && !/^https:\/\//.test(rpcUrl)) throw new Error('Journal BSC RPC URL must use HTTPS.');
   if (production && !/^https:\/\//.test(origin)) throw new Error('Production journal origin must use HTTPS.');
   return { dbPath, origin, rpcUrl,
+    legacyFactory: legacyFactoryConfiguration(env.BEMINE_LEGACY_FACTORY),
     allowedProductFactories: (env.BEMINE_JOURNAL_FACTORIES || '').split(',').map(value => value.trim()).filter(Boolean),
     productDeploymentRecordPath: env.BEMINE_DEPLOYMENT_RECORD_PATH,
     genesisRecordPath: env.BEMINE_GENESIS_RECORD_PATH,

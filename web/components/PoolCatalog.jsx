@@ -1,11 +1,12 @@
 'use client';
+import { displayDecimal } from '../lib/amount-display.mjs';
 import { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../lib/i18n';
 import { purchaseTotal, subscriptionPrice } from '../lib/economics';
 import { Search, SlidersHorizontal, X, ArrowRight, Cpu, ChevronDown, Layers, Activity, ArrowUpRight, Info } from 'lucide-react';
 import { CATALOG_LABELS, CATALOG_STATUSES, DEFAULT_FILTERS, SOURCES, SORT_OPTIONS, selectProjects, summarizeProjects, projectPrice, dailyUnitPrice, projectSources, projectGroup } from '../lib/catalog';
 
-const amount = (value, digits = 2) => value == null || !Number.isFinite(value) ? '—' : value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const amount = (value, digits = 2) => value == null || !Number.isFinite(value) ? '—' : displayDecimal(value);
 
 function ProjectRows({ pools, onDetails, status }) {
   const { t } = useI18n();

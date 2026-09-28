@@ -89,8 +89,8 @@ test('unknown source and rejected reads cannot become a successful empty portfol
   const failed = fixture(async method => { if (method === 'readPositions') throw new Error('RPC down'); return empty(source); });
   await assert.rejects(readPageRound(failed.client, { route: 'overview', account }), /RPC down/);
   const verified = await readPageRound(fixture().client, { route: 'overview', account });
-  assert.equal(amount(sumKnown(verified.positions.items, 'claimableBEM'), 8), '0');
-  assert.equal(amount(sumKnown(verified.positions.items, 'bnbOwed')), '0');
+  assert.equal(amount(sumKnown(verified.positions.items, 'claimableBEM'), 8), '0.000');
+  assert.equal(amount(sumKnown(verified.positions.items, 'bnbOwed')), '0.000');
   assert.equal(sumKnown(verified.positions.items, 'shares'), 0n);
   assert.equal(verified.positions.items.filter(row => row.shares > 0n).length, 0);
   assert.equal(amount(null), '—');

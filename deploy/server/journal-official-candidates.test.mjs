@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Interface, getAddress } from 'ethers';
+import { Interface, getAddress, keccak256, toUtf8Bytes } from 'ethers';
 import { createBoundedOfficialProvider, createJournalService } from './journal-api.mjs';
 
 const address = value => getAddress(`0x${value.toString(16).padStart(40, '0')}`);
@@ -23,9 +23,30 @@ const poolAbi = new Interface([
 ]);
 const path = number => `/api/journal/official-candidates?pool=${pool}&block=${number}&hash=${hash(number)}`;
 
+// The HTTP test supplies a controlled graph verifier. The artifact/record pair
+// still passes the real trusted-record loader; runtime proofs have their own suite.
+function trustedRecord(kind) {
+  const libraries = ['FlexiblePurchase','MiningOperations','PoolFunds','PurchaseValidation','RewardAccounting','SaleGovernance','SaleSettlement','ShareCheckpoints'];
+  const names = [...libraries,'AtomicDeployment','PoolVault','PoolFactory','ShareMarket','factory','shareMarket','lens','beacon','timelock',
+    'FirstoSale','BudgetPortfolioFactory','BudgetPortfolioVault','portfolioFactory','portfolioShareMarket','portfolioBeacon'];
+  const addresses = Object.fromEntries(names.map((name,index)=>[name,address(index+10)])); addresses.factory=factory;
+  addresses.portfolioVaultImplementation=addresses.BudgetPortfolioVault; addresses.portfolioFactoryImplementation=addresses.BudgetPortfolioFactory;
+  const bundle={sourceCommit:'a'.repeat(40),artifacts:Object.fromEntries([...names,'ERC1967Proxy','PoolLens','PoolBeacon','PoolTimelock'].sort().map(name=>[name,{}]))};
+  const artifactDigest=keccak256(toUtf8Bytes(JSON.stringify({artifacts:bundle.artifacts})));
+  const integrated=kind==='integrated-v2';
+  const steps=[...libraries,...(integrated?['FirstoSale']:[]),'AtomicDeployment','PoolVault','PoolFactory','ShareMarket',
+    ...(integrated?['BudgetPortfolioFactory','BudgetPortfolioVault']:[]),'initialize'];
+  return {bundle,record:{schemaVersion:1,...(integrated?{kind}:{}),chainId:56,status:'complete',account:address(90),
+    input:{governanceMode:'single'},artifactDigest,addresses,
+    steps:steps.map(id=>({id,status:'confirmed',receipt:{status:1},txHash:hash(8)})),
+    verification:{checks:[{passed:true}],code:Object.fromEntries(names.map(name=>[name,{address:addresses[name],codehash:hash(9)}]))}}};
+}
+
 async function fixture({ discovery = async (_rpc, options) =>
   ({ complete: true, chainBlock: options.blockNumber, candidates: [] }),
-  graphWork = async () => {}, officialScanTimeoutMs, now = Date.now } = {}) {
+  graphWork = async () => {}, officialScanTimeoutMs, now = Date.now, trustedKind } = {}) {
+  const trusted = trustedKind ? trustedRecord(trustedKind) : null;
+  const currentDigest = trusted?.record.artifactDigest ?? digest;
   const directory = await mkdtemp(join(tmpdir(), 'journal-official-'));
   const state = { chain: 56n, head: 20, registered: true, funded: 1n, timestamp: 1000,
     flexible: true, collection, referenceId: 77n, weight: 100n, initialized: true,
@@ -56,14 +77,15 @@ async function fixture({ discovery = async (_rpc, options) =>
     },
   };
   const service = createJournalService({ dbPath: join(directory, 'private', 'journal.sqlite'), origin,
-    provider, currentArtifactDigest: () => digest, allowedProductFactories: [factory],
+    provider, currentArtifactDigest: () => currentDigest, allowedProductFactories: [factory],
+    ...(trusted ? {productDeploymentRecord:trusted.record,productArtifactBundle:trusted.bundle} : {}),
     productGraphVerifier: async (_rpc, expected, block) => {
       state.activity.graphs += 1;
       assert.equal(expected.toLowerCase(), factory.toLowerCase());
       assert.equal(block.hash, state.blockHashes.get(block.number) ?? hash(block.number));
       await graphWork(state, block);
       if (!state.graphValid) throw Error('schema2 upgrade changed');
-      return { factory, artifactDigest: digest, blockNumber: block.number };
+      return { factory, artifactDigest: currentDigest, blockNumber: block.number };
     }, officialCandidateDiscovery: discovery, officialScanTimeoutMs, now });
   const server = createServer((req, res) => service.handle(req, res));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -77,6 +99,19 @@ async function fixture({ discovery = async (_rpc, options) =>
     await rm(directory, { recursive: true, force: true });
   } };
 }
+
+test('a reviewed integrated-v2 genesis permits official discovery without an upgrade record; old genesis stays closed', async () => {
+  const current = await fixture({trustedKind:'integrated-v2'});
+  try {
+    const result=await current.get(path(10));assert.equal(result.status,200);
+    assert.equal(result.body.complete,true);assert.equal(current.state.activity.graphs,1);
+    current.state.graphValid=false;
+    assert.equal((await current.get(path(11))).status,503,'integrated kind never replaces the pinned graph verification');
+  } finally { await current.close(); }
+  const legacy=await fixture({trustedKind:'legacy'});
+  try { assert.equal((await legacy.get(path(10))).status,503);assert.equal(legacy.state.activity.graphs,0); }
+  finally { await legacy.close(); }
+});
 
 test('public journal route verifies graph, registered Funded pool and pinned model before listing candidates', async () => {
   let scans = 0;
