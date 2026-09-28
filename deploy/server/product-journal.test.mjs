@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { Interface, Wallet, getAddress } from 'ethers';
-import { createJournalService, verifyProductIntent as verifyWithGraph, cancellationIntent, PRODUCT_POOL_ABI as poolAbi, PRODUCT_MARKET_ABI as marketAbi, PRODUCT_FACTORY_ABI as factoryAbi,
+import { createJournalService, createProductVerifierProvider, verifyProductIntent as verifyWithGraph, cancellationIntent, PRODUCT_POOL_ABI as poolAbi, PRODUCT_MARKET_ABI as marketAbi, PRODUCT_FACTORY_ABI as factoryAbi,
   PRODUCT_PORTFOLIO_ABI as portfolioAbi,PRODUCT_PORTFOLIO_FACTORY_ABI as portfolioFactoryAbi } from './journal-api.mjs';
 import { JournalStore } from './journal-store.mjs';
 import { parseFirstoSignedAsk } from '../src/firsto-purchase.mjs';
@@ -16,6 +16,25 @@ const factory = addr(1), pool = addr(2), market = addr(3), wallet = Wallet.creat
 const origin = 'http://127.0.0.1:4173';
 const graphVerifier = async()=>{};
 const verifyProductIntent=(provider,record,allow)=>verifyWithGraph(provider,record,allow,graphVerifier);
+
+test('signing verifier sends independent graph reads to an RPC that cannot answer batches',async()=>{
+  const seen=[];
+  const server=createServer(async(req,res)=>{
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);
+    const body=JSON.parse(Buffer.concat(chunks).toString());seen.push(body);
+    res.setHeader('Content-Type','application/json');
+    if(Array.isArray(body)){res.end(JSON.stringify({jsonrpc:'2.0',id:null,error:{code:-32600,message:'batch unavailable'}}));return;}
+    res.end(JSON.stringify({jsonrpc:'2.0',id:body.id,result:body.method==='eth_chainId'?'0x38':'0x'}));
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const provider=createProductVerifierProvider(`http://127.0.0.1:${server.address().port}`);
+  try{
+    const result=await Promise.all(Array.from({length:24},(_,i)=>provider.send('eth_call',
+      [{to:factory,data:`0x${i.toString(16).padStart(8,'0')}`},'latest'])));
+    assert.equal(result.length,24);assert(result.every(value=>value==='0x'));
+    assert(seen.length>=24);assert(seen.every(body=>!Array.isArray(body)));
+  }finally{provider.destroy();await new Promise(resolve=>server.close(resolve));}
+});
 
 async function firstoIntentProof(options = {}) {
   const source=await signedSource(),order=parseFirstoSignedAsk(source,{collection,tokenId:'7',owner:source.account,now});

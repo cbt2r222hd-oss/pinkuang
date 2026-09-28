@@ -711,12 +711,18 @@ function sessionCookie(token, secure) {
   return `${TOKEN_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/api/journal; Max-Age=${SESSION_MS / 1000}${secure ? '; Secure' : ''}`;
 }
 
-/** Isolated, bounded public reads. The transaction-signing journal keeps its existing provider. */
+/** Isolated, bounded public reads. */
 export function createBoundedOfficialProvider(url, timeoutMs = OFFICIAL_RPC_TIMEOUT_MS) {
   const request = new FetchRequest(url);
   request.timeout = timeoutMs;
   request.setThrottleParams({ maxAttempts: 1 });
   return new JsonRpcProvider(request, 56, { staticNetwork: true, cacheTimeout: -1, batchMaxCount: 1 });
+}
+
+/** The signing RPC must not batch independent graph checks: some BSC endpoints
+ * return incomplete batch responses, which otherwise reject valid intents. */
+export function createProductVerifierProvider(url) {
+  return new JsonRpcProvider(url, undefined, { cacheTimeout: -1, batchMaxCount: 1 });
 }
 
 export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = false,
@@ -737,7 +743,7 @@ export function createJournalService({ dbPath, origin, rpcUrl, secureCookies = f
   const cookieSecure = secureCookies || parsedOrigin.protocol === 'https:';
   legacyFactory = legacyFactoryConfiguration(legacyFactory);
   const store = new JournalStore(dbPath);
-  const provider = suppliedProvider ?? (rpcUrl ? new JsonRpcProvider(rpcUrl, undefined, {cacheTimeout:-1}) : null);
+  const provider = suppliedProvider ?? (rpcUrl ? createProductVerifierProvider(rpcUrl) : null);
   const officialProvider = suppliedProvider ? suppliedProvider : rpcUrl ? createBoundedOfficialProvider(rpcUrl) : null;
   if (!Array.isArray(allowedProductFactories) || allowedProductFactories.length > 32) throw new Error('Invalid product Factory allowlist.');
   const productFactories = new Set(allowedProductFactories.map(identity));
