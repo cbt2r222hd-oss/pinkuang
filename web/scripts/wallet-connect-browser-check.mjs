@@ -117,7 +117,7 @@ try {
   mobile.on('pageerror', error => errors.push(error.message));
   await mobile.route(/\/data\/frontend-manifest\.json(?:\?.*)?$/, route => route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }));
   await mobile.goto(base);
-  await mobile.locator('.live-service-note strong').getByText('数据暂不可用', { exact: true }).waitFor();
+  await mobile.locator('.live-service-note strong').getByText('项目尚未开放，等待部署核验', { exact: true }).waitFor();
   await mobile.getByRole('button', { name: '连接钱包', exact: true }).click();
   await mobile.getByText('尚未检测到钱包', { exact: true }).waitFor();
   // Local HTTP URLs must not be put into mobile dapp links. HTTPS formats are verified in the unit test.

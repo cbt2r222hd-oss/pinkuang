@@ -60,7 +60,7 @@ npm run artifacts:check
 node scripts/package-release.mjs --out /absolute/releases/pinkuang-deploy-v2-reviewed
 ```
 
-白名单为 `dist/`、`server/`、`shared/`、两个 package JSON、`public/deployment-artifacts.json`，以及日志服务静态依赖的 `scripts/official-market-discovery.mjs`。没有打包采购/挖矿 keeper 的执行入口。脚本拒绝符号链接、`.env`、钱包密钥、数据库及不受支持的文件类型，检查运行时相对 import 完整、浏览器内置摘要与产物一致，生成含逐文件 SHA-256、原产物源码提交、当前源码提交、artifactDigest 和 16 步标识的 `release-manifest.json`。不要把生产 journal、会话、环境文件或通知凭据复制到此目录。
+白名单为 `dist/`、`server/`、`shared/`、两个 package JSON、`public/deployment-artifacts.json`，以及日志服务静态依赖的 `scripts/official-market-discovery.mjs` 和 Firsto 校验依赖的 `src/firsto-purchase.mjs`。没有打包采购/挖矿 keeper 的执行入口。脚本拒绝符号链接、`.env`、钱包密钥、数据库及不受支持的文件类型，检查运行时相对 import 完整、浏览器内置摘要与产物一致，生成含逐文件 SHA-256、原产物源码提交、当前源码提交、artifactDigest 和 16 步标识的 `release-manifest.json`。不要把生产 journal、会话、环境文件或通知凭据复制到此目录。
 
 这是一份独立测试发布包。安装依赖可以在该目录运行 `npm ci --omit=dev --ignore-scripts`，运行环境须支持 `node:sqlite`（本次 Linux 验证使用 Node 24）。安装后可仅检查模块导入，不启动服务：
 

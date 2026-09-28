@@ -15,7 +15,7 @@ try{
  const page=await browser.newPage({viewport:{width:1440,height:1050}});
  page.setDefaultTimeout(5000);page.on('pageerror',error=>errors.push(error.message));
  await page.route(/\/data\/frontend-manifest\.json(?:\?.*)?$/, route => route.fulfill({status:404,contentType:'application/json',body:'{}'}));
- await page.goto(base);await page.locator('.live-service-note strong').getByText('数据暂不可用',{exact:true}).waitFor();
+ await page.goto(base);await page.locator('.live-service-note strong').getByText('项目尚未开放，等待部署核验',{exact:true}).waitFor();
  assert(await page.getByRole('button',{name:'连接钱包',exact:true}).isEnabled());
  assert.equal(await page.locator('.bemine-stat').filter({hasText:'累计立项'}).locator('strong').innerText(),'—个');
  checks.push('unconfigured: no fabricated balances or enabled wallet writes');

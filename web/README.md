@@ -27,6 +27,10 @@ NEXT_PUBLIC_DEPLOY_CONSOLE_URL=http://localhost:4173/ pnpm build
 
 部署台的运行条件见 [deploy/README.md](../deploy/README.md) 和 [服务器日志配置](../deploy/server/JOURNAL.md)。
 
+当前源码不附带可直接启用的生产合约清单。完成新部署台 **16 步**及链上验收后，导出新的 `integrated-v2` 前端清单，放到站点 `data/frontend-manifest.json`；缺少清单时正式页面显示“项目尚未开放，等待部署核验”，真实 RPC 或版本核验错误仍显示独立的不可用状态。不得把旧地址与新产物摘要手工拼接启用。2026-09-27 的旧清单已原样归档于 [历史清单](../docs/deployments/legacy-frontend-manifest-20260927.json)，仅用于审计追溯。
+
+发布新静态产物时，还须检查服务器 `/data` 的旧软链接、共享目录或 nginx 挂载：源码移除旧 JSON 不会自动清理外部挂载。尚未导出新清单时，此 URL 应返回真实 HTTP 404，不能继续提供旧清单，也不能由 SPA 回退返回 HTTP 200 的 HTML。部署完成后再核对该 URL 返回的新地址、摘要与部署记录一致。
+
 `out/`、`.next/`、`node_modules/` 和本地环境文件不入库。Next.js 使用静态导出，部署由静态服务器提供 `out/`，不使用 `next start`。
 
 ## 数据与合约边界

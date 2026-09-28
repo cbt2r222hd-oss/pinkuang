@@ -10,7 +10,8 @@ const DEPLOY = fileURLToPath(new URL('../', import.meta.url));
 const TREES = ['dist', 'server', 'shared'];
 // journal-api statically imports this read-only helper. Never include keeper CLIs.
 const RUNTIME_SCRIPTS = ['scripts/official-market-discovery.mjs'];
-const EXACT_FILES = ['package.json', 'package-lock.json', 'public/deployment-artifacts.json', ...RUNTIME_SCRIPTS];
+const RUNTIME_SOURCES = ['src/firsto-purchase.mjs'];
+const EXACT_FILES = ['package.json', 'package-lock.json', 'public/deployment-artifacts.json', ...RUNTIME_SCRIPTS, ...RUNTIME_SOURCES];
 const SOURCE_EXTENSIONS = new Set(['.mjs', '.mts', '.json', '.md']);
 const DIST_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico', '.woff', '.woff2', '.ttf', '.txt']);
 const HASH = /^[a-f\d]{40,64}$/i;
@@ -50,7 +51,7 @@ function collectTree(source, folder, files) {
 /** Check packaged runtime imports without executing any service, keeper, notification or RPC. */
 function checkRuntimeImports(files) {
   for (const [name, data] of files) {
-    if (!/^(?:server|shared|scripts)\//.test(name) || !name.endsWith('.mjs') || name.endsWith('.test.mjs')) continue;
+    if (!/^(?:server|shared|scripts|src)\//.test(name) || !name.endsWith('.mjs') || name.endsWith('.test.mjs')) continue;
     const source = data.toString('utf8');
     const imports = [...source.matchAll(/\b(?:import|export)\s+(?:(?:[^;]*?\s+from\s+)?)["']([^"']+)["']/g),
       ...source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)];
@@ -92,7 +93,7 @@ export function packageRelease({ deployDir = DEPLOY, outDir, sourceHead } = {}) 
   const manifest = { schemaVersion: 1, kind: 'integrated-v2', createdAt: new Date().toISOString(),
     sourceCommit: artifact.sourceCommit, sourceHead, artifactDigest, artifactSha256: sha256(files.get('public/deployment-artifacts.json')),
     chainId: 56, transactionCount: 16, installation: 'npm ci --omit=dev --ignore-scripts', entrypoint: 'node server/index.mjs',
-    runtimeScripts: RUNTIME_SCRIPTS, includedTrees: TREES, explicitFiles: EXACT_FILES,
+    runtimeScripts: RUNTIME_SCRIPTS, runtimeSources: RUNTIME_SOURCES, includedTrees: TREES, explicitFiles: EXACT_FILES,
     files: Object.fromEntries(ordered.map(([name, bytes]) => [name, { sha256: sha256(bytes), bytes: bytes.length }])),
     activation: 'Not activated. Independent host/port/journal/HTTPS proxy configuration is required.' };
   mkdirSync(output, { recursive: false });

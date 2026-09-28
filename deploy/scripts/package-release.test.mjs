@@ -15,9 +15,10 @@ function fixture() {
   write('public/deployment-artifacts.json', bundle); write('dist/deployment-artifacts.json', bundle);
   const digest = servedArtifactDigest(join(deployDir, 'public/deployment-artifacts.json'));
   write('dist/assets/app.js', `const digest=${JSON.stringify(digest)};`); write('dist/index.html', '<script src="./assets/app.js"></script>');
-  write('server/index.mjs', "import '../scripts/official-market-discovery.mjs';\nexport const ready=true;\n");
+  write('server/index.mjs', "import '../scripts/official-market-discovery.mjs';\nimport '../src/firsto-purchase.mjs';\nexport const ready=true;\n");
   write('shared/proof.mjs', 'export const proof=true;');
   write('scripts/official-market-discovery.mjs', 'export const readOnly=true;');
+  write('src/firsto-purchase.mjs', 'export const exchange=true;');
   write('package.json', '{"type":"module"}'); write('package-lock.json', '{}');
   return { deployDir, outDir, sourceHead, write, digest };
 }
@@ -28,6 +29,7 @@ test('release directory includes runtime discovery and index artifact, with veri
   const result = packageRelease(f), manifest = JSON.parse(readFileSync(join(f.outDir, 'release-manifest.json')));
   assert.equal(result.artifactDigest, f.digest); assert.equal(manifest.transactionCount, 16);
   assert.deepEqual(manifest.runtimeScripts, ['scripts/official-market-discovery.mjs']);
+  assert.deepEqual(manifest.runtimeSources, ['src/firsto-purchase.mjs']);
   assert(!existsSync(join(f.outDir, 'scripts/purchase-keeper.mjs')));
   assert(existsSync(join(f.outDir, 'public/deployment-artifacts.json')));
   for (const [name, info] of Object.entries(manifest.files)) {

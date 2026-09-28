@@ -1395,11 +1395,15 @@ export default function LivePlatform() {
                 <strong>
                   {boot.status === "loading"
                     ? L("正在核对链上数据…", "Checking on-chain data…")
+                    : boot.status === "unconfigured"
+                    ? L("项目尚未开放，等待部署核验", "Project not yet open — awaiting deployment verification")
                     : L("数据暂不可用", "Data temporarily unavailable")}
                 </strong>
                 <p>
                   {boot.status === "loading"
                     ? L("正在核对合约和链上项目，请稍候。", "Checking contracts and on-chain pools. Please wait.")
+                    : boot.status === "unconfigured"
+                    ? L(boot.reason || "尚未配置已核验的正式合约。", "Verified production contracts have not been configured yet.")
                     : L("暂时无法完成链上核验，请稍后刷新。", "On-chain verification is temporarily unavailable. Please refresh later.")}
                 </p>
               </div>
